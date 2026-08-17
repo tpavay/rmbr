@@ -113,6 +113,7 @@ These are the places the implementation and the specifications disagree, and why
 
 6. **A stale index triggers a full rebuild.**
    Library changes are detected by comparing asset count and newest capture date against the snapshot, and a mismatch re-walks the library rather than applying an incremental `PHChange` diff.
+   Those two numbers cannot see one limited selection swapped for another, so under a limited grant the signature also carries a hash of the chosen identifiers.
    At the measured cost of a walk this is cheap; the incremental path is the obvious next refinement.
 
 ## What the numbers were

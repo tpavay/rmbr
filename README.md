@@ -21,9 +21,10 @@ geotagged photograph shows no place at all, and rmbr does not guess one.
 
 ## Running it
 
-Open `rmbr.xcodeproj`, set Signing & Capabilities > Team on the `rmbr` target, and run.
-Grant full access to the photo library when asked; limited access works, but every count
-rmbr shows is then a count of what it can see rather than of what exists.
+Open `rmbr.xcodeproj` and run; device builds sign with the team already committed in the
+project (see `AGENTS.md`). Grant full access to the photo library when asked; limited
+access works, but every count rmbr shows is then a count of what it can see rather than
+of what exists.
 
 Place names need a Geoapify API key, entered once in the reconstruction sheet behind the
 gauge control in the top right. Without one, days still rebuild - they just have
