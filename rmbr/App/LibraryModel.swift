@@ -56,13 +56,15 @@ final class DayCache: @unchecked Sendable {
         evictOverflow()
     }
 
-    /// Drops one day, so the next read composes it against whatever is known now.
-    func invalidate(_ date: LocalDate) {
+    /// Whether this day belongs to the composed schedule rather than to what was opened.
+    func isScheduled(_ date: LocalDate) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        let key = date.description
-        storage[key] = nil
-        scheduled.remove(key)
-        if let index = opened.firstIndex(of: key) { opened.remove(at: index) }
+        return scheduled.contains(date.description)
+    }
+
+    func contains(_ date: LocalDate) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return storage[date.description] != nil
     }
 
     func invalidateAll() {
@@ -192,8 +194,11 @@ final class LibraryModel {
         case .full, .limited:
             // Full to limited narrows what may be shown, and limited to full changes what
             // every count means. Neither may keep serving the old index and the pixels
-            // decoded from it while the replacement is being built.
-            if changed { forgetLibrary() }
+            // decoded from it while the replacement is being built. A limited grant can
+            // also be re-chosen without the enum moving at all, and finding that out means
+            // reading the new selection - which must not happen while photographs the
+            // person may have just revoked are still on screen.
+            if changed || current == .limited { forgetLibrary() }
             await loadOrBuildIndex()
         }
     }
@@ -595,27 +600,70 @@ final class LibraryModel {
         ledgerLabelCount = updated.resolvedCount
         placeReport = report
 
-        // Two reasons to stop with the labels and nothing else. The library may have been
+        let answered = result.pendingPlaceLookups.map(\.coordinate)
+
+        // Two reasons to stop short of rebuilding the window. The library may have been
         // rebuilt or narrowed while the provider was answering, in which case recomposing
         // from the index this call started with would put back records the new grant may
         // not cover. Or the person left the day, in which case a full recomposition is
-        // work nobody is waiting for.
+        // work nobody is waiting for. What did land is still carried into every day it
+        // names, because the coordinate is answered now and nothing would ask again.
         guard !report.wasCancelled, !Task.isCancelled else {
-            // A label that did land is owed to this day: the coordinate is answered now,
-            // so nothing would ask again and the cached day would stay unnamed forever.
-            if report.resolved > 0 || report.unlabelled > 0 { cache.invalidate(date) }
+            if report.resolved > 0 || report.unlabelled > 0,
+               libraryGeneration == generation, let current = self.index {
+                refreshDays(near: answered, index: current)
+            }
             return
         }
         guard libraryGeneration == generation, let current = self.index else { return }
 
-        // Every composed day may now carry a label it did not have, so the composed
-        // window is rebuilt rather than left to recompose a row at a time while it is
-        // being laid out.
-        cache.invalidateAll()
+        // Days these coordinates name are brought up to date first, so a scheduled row is
+        // replaced in place rather than dropped: the composed window stays whole until the
+        // rebuild below can commit its replacement, and a rebuild that gets cancelled
+        // cannot leave Life composing a row while it is being laid out.
+        refreshDays(near: answered, index: current)
         await composeBackfill(index: current)
         guard libraryGeneration == generation else { return }
+        mergeAttributions(from: day(for: date))
+    }
+
+    /// Recomposes every cached day the newly answered coordinates name.
+    ///
+    /// One anchor can be the place of many days, and a day already composed without the
+    /// label would keep that composition forever: the ledger answers the coordinate now,
+    /// so no later composition would ask for it again. A scheduled day is replaced in
+    /// place, which is what keeps the composed window whole.
+    private func refreshDays(near coordinates: [Coordinate], index: CaptureIndex) {
+        guard !coordinates.isEmpty else { return }
+        let named = signalsByDate.compactMap { date, signals -> LocalDate? in
+            let touched = signals.chronologicalAnchorCentroids.contains { centroid in
+                coordinates.contains {
+                    $0.distance(to: centroid) <= PlaceLabelLedger.matchDistanceMetres
+                }
+            }
+            return touched && cache.contains(date) ? date : nil
+        }
+        for date in named {
+            let result = composer.compose(
+                date: date,
+                captures: index.records(on: date),
+                context: DayComposer.Context(
+                    timeZone: index.timeZone,
+                    hasFullLibraryAccess: access.isExhaustive,
+                    placeLabels: ledger.lookup,
+                    composedAt: Date()
+                )
+            )
+            cache.store(result.day, scheduled: cache.isScheduled(date))
+            // A stored label may never be shown without the credits it owes, whatever
+            // path put it on screen.
+            mergeAttributions(from: result.day)
+        }
+    }
+
+    private func mergeAttributions(from day: Day) {
         var credits = Set(placeAttributions.map(ResolvedPlaceLabel.creditKey))
-        for line in day(for: date).placeAttributions
+        for line in day.placeAttributions
         where credits.insert(ResolvedPlaceLabel.creditKey(line)).inserted {
             placeAttributions.append(line)
         }
