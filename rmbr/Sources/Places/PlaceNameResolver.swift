@@ -1,0 +1,148 @@
+import Foundation
+
+/// What the resolver did, so a thin day can say why rather than looking broken.
+struct PlaceResolutionReport: Sendable, Hashable {
+    var requested: Int = 0
+    var resolved: Int = 0
+    var unlabelled: Int = 0
+    var failed: Int = 0
+    /// Requests not made because the day's provider budget was already spent.
+    var skippedForBudget: Int = 0
+    var lastError: String?
+}
+
+/// Turns pending anchor coordinates into stored place labels.
+///
+/// Three rules shape this. Composition never waits on it, so a day is readable before
+/// any label arrives. It never asks twice for a coordinate it has already answered,
+/// because the ledger is permanent. And when the daily provider budget runs out it says
+/// so out loud rather than quietly returning fewer names - a silent cap reads as "this
+/// day had no places", which is a claim rmbr must never make by accident.
+actor PlaceNameResolver {
+    private let store: PlaceLabelLedgerStore
+    private let credentials: GeoapifyCredentialStore
+    private let session: URLSession
+    private let dailyRequestBudget: Int
+    private let minimumRequestInterval: TimeInterval
+
+    private var ledger: PlaceLabelLedger
+    private var lastRequestAt: Date?
+    private var inFlight: Set<String> = []
+
+    init(
+        store: PlaceLabelLedgerStore = PlaceLabelLedgerStore(),
+        credentials: GeoapifyCredentialStore = GeoapifyCredentialStore(),
+        session: URLSession = .shared,
+        // Geoapify's free tier allows 3,000 credits a day. Staying under it keeps the
+        // budget from being exhausted by a background pass before the person opens
+        // anything.
+        dailyRequestBudget: Int = 2_500,
+        minimumRequestInterval: TimeInterval = 0.25
+    ) {
+        self.store = store
+        self.credentials = credentials
+        self.session = session
+        self.dailyRequestBudget = dailyRequestBudget
+        self.minimumRequestInterval = minimumRequestInterval
+        self.ledger = store.load()
+    }
+
+    var currentLedger: PlaceLabelLedger { ledger }
+
+    var hasCredential: Bool { credentials.hasKey }
+
+    /// Resolves what it can and returns the updated ledger.
+    ///
+    /// - Parameter lookups: anchors a composition wanted labels for. Duplicates and
+    ///   coordinates already in the ledger are dropped before any request is made.
+    func resolve(_ lookups: [PendingPlaceLookup]) async -> (PlaceLabelLedger, PlaceResolutionReport) {
+        var report = PlaceResolutionReport()
+        guard let apiKey = credentials.read() else {
+            report.lastError = "No Geoapify key stored on this device."
+            return (ledger, report)
+        }
+
+        var pending: [Coordinate] = []
+        var claimed: [String] = []
+        for lookup in lookups {
+            let key = "\(lookup.coordinate.latitude),\(lookup.coordinate.longitude)"
+            guard ledger.needsLookup(lookup.coordinate), !inFlight.contains(key) else { continue }
+            // Two anchors inside the ledger's match distance of each other resolve to the
+            // same entry, so only ask once for the pair.
+            if pending.contains(where: { $0.distance(to: lookup.coordinate) <= PlaceLabelLedger.matchDistanceMetres }) {
+                continue
+            }
+            pending.append(lookup.coordinate)
+            inFlight.insert(key)
+            claimed.append(key)
+        }
+        // Release only what this call claimed: a concurrent resolve may be holding
+        // coordinates of its own across the same suspension points.
+        defer { for key in claimed { inFlight.remove(key) } }
+
+        guard !pending.isEmpty else { return (ledger, report) }
+
+        let geocoder = GeoapifyReverseGeocoder(apiKey: apiKey, session: session)
+        var spent = RequestBudget.spentToday()
+
+        for coordinate in pending {
+            if Task.isCancelled { break }
+            guard spent < dailyRequestBudget else {
+                report.skippedForBudget += 1
+                continue
+            }
+            await throttle()
+            report.requested += 1
+            spent += 1
+            RequestBudget.recordSpend()
+            do {
+                if let label = try await geocoder.label(for: coordinate) {
+                    ledger.record(.resolved(label), at: coordinate)
+                    report.resolved += 1
+                } else {
+                    ledger.record(.unlabelled(attemptedAt: Date()), at: coordinate)
+                    report.unlabelled += 1
+                }
+            } catch {
+                // A failure leaves the coordinate unanswered rather than recording a
+                // wrong or empty label, so a later run can try again (RQ-052).
+                report.failed += 1
+                report.lastError = String(describing: error)
+            }
+        }
+
+        try? store.save(ledger)
+        return (ledger, report)
+    }
+
+    private func throttle() async {
+        guard let last = lastRequestAt else {
+            lastRequestAt = Date()
+            return
+        }
+        let elapsed = Date().timeIntervalSince(last)
+        if elapsed < minimumRequestInterval {
+            try? await Task.sleep(for: .seconds(minimumRequestInterval - elapsed))
+        }
+        lastRequestAt = Date()
+    }
+}
+
+/// A per-calendar-day count of provider requests, so a runaway pass cannot spend the
+/// whole free tier in one background sweep.
+enum RequestBudget {
+    private static let prefix = "rmbr.geoapify.spend."
+
+    private static var todayKey: String {
+        let now = LocalDate(instant: Date(), in: .current)
+        return prefix + now.description
+    }
+
+    static func spentToday() -> Int {
+        UserDefaults.standard.integer(forKey: todayKey)
+    }
+
+    static func recordSpend() {
+        UserDefaults.standard.set(spentToday() + 1, forKey: todayKey)
+    }
+}

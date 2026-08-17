@@ -4,37 +4,56 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## What this repository currently is
 
-Phase 0 only: a throwaway measurement spike, not the product.
-Its findings and the data model they imply live in `docs/phase-0-findings.md`, which is the artefact intended to outlive the code in `rmbr/`.
-Read that file before designing anything.
+rmbr rebuilds a person's days from their photo library.
 
-## Build and run
+Milestone 1 is the reconstruction engine and a deliberately rough day surface, reading **photographs only** - no calendar, no HealthKit, no Core Location.
+`docs/reconstruction-engine.md` is the authoritative account of what is built, where it lives, and every place it departs from its specifications. Read it before changing the engine.
+`docs/phase-0-findings.md` is the surviving artefact of the throwaway measurement spike that preceded it; its API appendix and its "Day model this wants to be" section are still current.
 
-Single Xcode project at the repository root, no packages, no test target.
+The specifications the engine implements live in the firstmate home, not in this repository: the reconstruction PRD, the reconstruction engine specification, and the day-page specification.
+
+## Build, test and run
+
+Single Xcode project at the repository root. Two targets, no packages.
 
 ```
 xcodebuild -project rmbr.xcodeproj -scheme rmbr -configuration Debug \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
+
+xcodebuild -project rmbr.xcodeproj -scheme rmbr -configuration Debug \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test
 ```
 
 `DEVELOPMENT_TEAM` is intentionally empty, so a device build needs a team selected in Xcode once.
 Verify a device compile without signing using `-destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO`.
 
-The spike can be driven without tapping a simulator:
+Swift 6 language mode is on. Keep it on.
 
-```
-xcrun simctl launch --console-pty booted com.TylerPavay.rmbr -autorun-survey [-skip-permission-requests]
-xcrun simctl launch --console-pty booted com.TylerPavay.rmbr -autorun-day 2026-08-12
-```
+Every run prints a reconstruction report to the console - asset count, fetch and walk times, days indexed, Life rows - and the same figures appear in the reconstruction sheet behind the gauge control. That report is how first-run cost gets measured rather than estimated.
 
-`-skip-permission-requests` suppresses all three permission sheets so the refused and empty paths can be exercised unattended.
+## Place names and the Geoapify key
+
+Place labels come from Geoapify rather than MapKit, because Apple forbids permanent storage of Map Data and rmbr's labels are permanent. `docs/reconstruction-engine.md` has the reasoning.
+
+The API key lives in the device keychain and is entered through the reconstruction sheet. It must never be committed, put in an `xcconfig` or an `Info.plist`, or compiled into a build. The master copy belongs in the macOS keychain via `secret set geoapify`.
+
+Geoapify's terms require OpenStreetMap attribution wherever the stored label is shown; `Day.placeAttributions` carries it so a display path cannot drop it.
 
 ## Sharp edges worth knowing before you hit them
 
-`xcrun simctl privacy <device> grant photos <bundle-id>` writes the TCC row but does not make PhotoKit report authorised on the iOS 26 simulator.
-The on-screen prompt has to be answered with a real mouse click; `System Events`' `click at` presses the element behind the alert rather than the alert itself.
+`xcrun simctl privacy <device> grant photos <bundle-id>` writes the TCC row but does not make PhotoKit report authorised on the iOS 26 simulator - the prompt has to be answered for real. It *can* be answered without a human: get the device screen's geometry from the accessibility hierarchy and click into it. This corrects the phase-0 note that said the alert was unclickable.
 
-Further API-level gotchas established during phase 0 (HealthKit read permission being unknowable, `CLGeocoder` being deprecated in favour of `MKReverseGeocodingRequest`, `HKStatisticsQuery` signalling no-data as an error) are recorded in the appendix of `docs/phase-0-findings.md`.
+```
+osascript -e 'tell application "System Events" to tell process "Simulator" to return position of group 1 of group 1 of group 2 of group 1 of group 1 of group 1 of group 1 of group 1 of group 1 of group 1 of window 1'
+# screenshot pixels / 3 + that origin = the point to click
+osascript -e 'tell application "System Events" to click at {x, y}'
+```
+
+Synthetic scroll wheel and drag events do **not** scroll the simulator's content, so anything below the first viewport cannot be inspected this way. Assert page content through the string-level tests in `rmbrTests/DayPresentationTests.swift` instead.
+
+`xcrun simctl addmedia` takes EXIF `DateTimeOriginal` and GPS as the asset's creation date and location, which is enough to seed a realistically shaped library. It cannot create screenshots: `PHAssetMediaSubtype.photoScreenshot` is set by the system at capture, so screenshot exclusion has to be covered by unit tests.
+
+Further API-level gotchas established during phase 0 - HealthKit read permission being unknowable, `CLGeocoder` being deprecated in favour of `MKReverseGeocodingRequest`, `HKStatisticsQuery` signalling no-data as an error - are in the appendix of `docs/phase-0-findings.md`.
 
 ## Maintaining this file
 

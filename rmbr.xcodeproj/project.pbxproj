@@ -8,15 +8,23 @@
 
 /* Begin PBXFileReference section */
 		AAAA000000000000000000A1 /* rmbr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = rmbr.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		AAAA000000000000000000A2 /* rmbr.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = rmbr.entitlements; sourceTree = "<group>"; };
+		AAAA000000000000000000A3 /* rmbrTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = rmbrTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		AAAA000000000000000000B1 /* rmbr */ = {isa = PBXFileSystemSynchronizedRootGroup; path = rmbr; sourceTree = "<group>"; };
+		AAAA000000000000000000B2 /* rmbrTests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = rmbrTests; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		AAAA000000000000000000C1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AAAA000000000000000000C4 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -30,7 +38,7 @@
 			isa = PBXGroup;
 			children = (
 				AAAA000000000000000000B1 /* rmbr */,
-				AAAA000000000000000000A2 /* rmbr.entitlements */,
+				AAAA000000000000000000B2 /* rmbrTests */,
 				AAAA000000000000000000D2 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -39,6 +47,7 @@
 			isa = PBXGroup;
 			children = (
 				AAAA000000000000000000A1 /* rmbr.app */,
+				AAAA000000000000000000A3 /* rmbrTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -68,6 +77,29 @@
 			productReference = AAAA000000000000000000A1 /* rmbr.app */;
 			productType = "com.apple.product-type.application";
 		};
+		AAAA000000000000000000E3 /* rmbrTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AAAA000000000000000000F3 /* Build configuration list for PBXNativeTarget "rmbrTests" */;
+			buildPhases = (
+				AAAA000000000000000000C5 /* Sources */,
+				AAAA000000000000000000C4 /* Frameworks */,
+				AAAA000000000000000000C6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AAAA000000000000000000E5 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AAAA000000000000000000B2 /* rmbrTests */,
+			);
+			name = rmbrTests;
+			packageProductDependencies = (
+			);
+			productName = rmbrTests;
+			productReference = AAAA000000000000000000A3 /* rmbrTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -80,6 +112,10 @@
 				TargetAttributes = {
 					AAAA000000000000000000E1 = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					AAAA000000000000000000E3 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = AAAA000000000000000000E1;
 					};
 				};
 			};
@@ -98,12 +134,20 @@
 			projectRoot = "";
 			targets = (
 				AAAA000000000000000000E1 /* rmbr */,
+				AAAA000000000000000000E3 /* rmbrTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		AAAA000000000000000000C3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AAAA000000000000000000C6 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -120,7 +164,32 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AAAA000000000000000000C5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AAAA000000000000000000E5 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AAAA000000000000000000E1 /* rmbr */;
+			targetProxy = AAAA000000000000000000E6 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		AAAA000000000000000000E6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AAAA000000000000000000E2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AAAA000000000000000000E1;
+			remoteInfo = rmbr;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin XCBuildConfiguration section */
 		AAAA00000000000000000101 /* Debug */ = {
@@ -151,8 +220,7 @@
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_STRICT_CONCURRENCY = minimal;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
@@ -169,6 +237,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
@@ -176,8 +245,7 @@
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_STRICT_CONCURRENCY = minimal;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
@@ -185,21 +253,17 @@
 		AAAA00000000000000000103 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = rmbr.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = rmbr;
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "rmbr reads your sleep, steps, walking distance and workouts so it can tell you what a past day contained. It never writes anything to Health and nothing leaves your phone.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "rmbr checks whether iOS can tell it where you have been, so it knows whether a rebuilt day can name its places. Location is only read on this phone and is never sent anywhere.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "rmbr checks whether iOS can tell it where you have been, so it knows whether a rebuilt day can name its places. Location is only read on this phone and is never sent anywhere.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "rmbr reads the dates, coordinates and kinds of your photos to work out what happened on a given day. Photos are only read on this phone and are never uploaded.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "rmbr reads the dates, coordinates and kinds of your photographs to rebuild what a day contained. Your photographs are read only on this phone and are never uploaded.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
-				INFOPLIST_KEY_UIUserInterfaceStyle = Light;
+				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -215,21 +279,17 @@
 		AAAA00000000000000000104 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = rmbr.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = rmbr;
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "rmbr reads your sleep, steps, walking distance and workouts so it can tell you what a past day contained. It never writes anything to Health and nothing leaves your phone.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "rmbr checks whether iOS can tell it where you have been, so it knows whether a rebuilt day can name its places. Location is only read on this phone and is never sent anywhere.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "rmbr checks whether iOS can tell it where you have been, so it knows whether a rebuilt day can name its places. Location is only read on this phone and is never sent anywhere.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "rmbr reads the dates, coordinates and kinds of your photos to work out what happened on a given day. Photos are only read on this phone and are never uploaded.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "rmbr reads the dates, coordinates and kinds of your photographs to rebuild what a day contained. Your photographs are read only on this phone and are never uploaded.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
-				INFOPLIST_KEY_UIUserInterfaceStyle = Light;
+				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -239,6 +299,40 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		AAAA00000000000000000105 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.TylerPavay.rmbrTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/rmbr.app/rmbr";
+			};
+			name = Debug;
+		};
+		AAAA00000000000000000106 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.TylerPavay.rmbrTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/rmbr.app/rmbr";
 			};
 			name = Release;
 		};
@@ -259,6 +353,15 @@
 			buildConfigurations = (
 				AAAA00000000000000000103 /* Debug */,
 				AAAA00000000000000000104 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AAAA000000000000000000F3 /* Build configuration list for PBXNativeTarget "rmbrTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AAAA00000000000000000105 /* Debug */,
+				AAAA00000000000000000106 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

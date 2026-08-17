@@ -1,0 +1,155 @@
+import Foundation
+
+/// Reverse geocodes a coordinate through Geoapify.
+///
+/// Geoapify rather than MapKit, and the reason is licensing rather than quality. Apple's
+/// Developer Program License Agreement, Attachment 6 section 2.5, permits caching Map
+/// Data "on a temporary and limited basis" only, and a returned `MKMapItem.name` is Map
+/// Data. rmbr's whole point is that the label recorded on the day it happened stays that
+/// label forever, so a provider that only licenses temporary storage cannot supply it.
+/// Geoapify licenses indefinite storage of the returned address and location data and
+/// requires OpenStreetMap attribution in return, which is why every label carries its
+/// attribution string with it.
+///
+/// The request sends a latitude and a longitude. It carries no asset identifier, no
+/// timestamp, no device identifier and nothing else about the library.
+struct GeoapifyReverseGeocoder: Sendable {
+    /// Distance within which a returned named feature is treated as containing the
+    /// query point rather than merely being the nearest thing to it.
+    ///
+    /// This is a deliberately conservative stand-in for the calibrated POI-confidence
+    /// model the specification asks for (RQ-043's 0.85 confidence and 0.20 margin).
+    /// That model needs a labelled venue corpus that does not exist yet, and picking
+    /// the nearest business by distance alone is exactly what the naming rules forbid
+    /// (RE-033). Until the corpus exists, a name is used only when the provider puts
+    /// the feature effectively on top of the anchor; anything further away falls to a
+    /// coarser tier.
+    static let venueContainmentMetres: Double = 25.0
+
+    enum Failure: Error, Sendable {
+        case missingAPIKey
+        case badResponse(status: Int)
+        case decoding
+    }
+
+    let session: URLSession
+    let apiKey: String
+
+    init(apiKey: String, session: URLSession = .shared) {
+        self.apiKey = apiKey
+        self.session = session
+    }
+
+    func label(for coordinate: Coordinate, now: Date = Date()) async throws -> ResolvedPlaceLabel? {
+        var components = URLComponents(string: "https://api.geoapify.com/v1/geocode/reverse")!
+        components.queryItems = [
+            URLQueryItem(name: "lat", value: String(format: "%.6f", coordinate.latitude)),
+            URLQueryItem(name: "lon", value: String(format: "%.6f", coordinate.longitude)),
+            URLQueryItem(name: "format", value: "json"),
+            URLQueryItem(name: "limit", value: "1"),
+            URLQueryItem(name: "apiKey", value: apiKey)
+        ]
+        guard let url = components.url else { throw Failure.decoding }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        request.cachePolicy = .returnCacheDataElseLoad
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw Failure.decoding }
+        guard (200..<300).contains(http.statusCode) else {
+            throw Failure.badResponse(status: http.statusCode)
+        }
+        let payload = try JSONDecoder().decode(GeoapifyReverseResponse.self, from: data)
+        return Self.label(from: payload, at: now)
+    }
+
+    /// Applies the naming cascade to one provider response.
+    ///
+    /// A raw street address is never the printed label: "at 1101 W Van Buren" is not a
+    /// memory. When nothing above the address tier is supported, the cascade omits the
+    /// place phrase rather than printing coordinates or a house number (RE-033, RQ-044).
+    static func label(from payload: GeoapifyReverseResponse, at now: Date) -> ResolvedPlaceLabel? {
+        guard let result = payload.results.first else { return nil }
+        let attribution = result.datasource?.attribution ?? OpenStreetMap.attribution
+
+        func make(_ text: String, _ specificity: PlaceSpecificity, _ origin: PlaceLabelOrigin) -> ResolvedPlaceLabel {
+            ResolvedPlaceLabel(
+                text: text,
+                specificity: specificity,
+                origin: origin,
+                confidence: nil,
+                provider: "geoapify",
+                attribution: attribution,
+                fetchedAt: now
+            )
+        }
+
+        let isContained = (result.distance ?? .greatestFiniteMagnitude) <= venueContainmentMetres
+
+        if let name = result.name?.trimmed, !name.isEmpty, isContained {
+            let specificity: PlaceSpecificity = result.resultType == "amenity" ? .venue : .building
+            return make(name, specificity, .providerPOI)
+        }
+        if let neighbourhood = (result.suburb ?? result.district ?? result.quarter)?.trimmed,
+           !neighbourhood.isEmpty {
+            return make(neighbourhood, .neighbourhood, .providerGeography)
+        }
+        if let city = (result.city ?? result.town ?? result.village)?.trimmed, !city.isEmpty {
+            return make(city, .city, .providerGeography)
+        }
+        if let state = result.state?.trimmed, !state.isEmpty {
+            return make(state, .region, .providerGeography)
+        }
+        if let country = result.country?.trimmed, !country.isEmpty {
+            return make(country, .country, .providerGeography)
+        }
+        return nil
+    }
+}
+
+enum OpenStreetMap {
+    /// Geoapify's terms require OpenStreetMap attribution wherever the service's data is
+    /// used, including for stored results.
+    static let attribution = "© OpenStreetMap contributors"
+}
+
+/// The subset of Geoapify's reverse-geocode response rmbr reads.
+struct GeoapifyReverseResponse: Sendable, Codable {
+    struct Result: Sendable, Codable {
+        let name: String?
+        let street: String?
+        let suburb: String?
+        let district: String?
+        let quarter: String?
+        let city: String?
+        let town: String?
+        let village: String?
+        let state: String?
+        let country: String?
+        let formatted: String?
+        let distance: Double?
+        let resultType: String?
+        let datasource: Datasource?
+
+        enum CodingKeys: String, CodingKey {
+            case name, street, suburb, district, quarter, city, town, village
+            case state, country, formatted, distance, datasource
+            case resultType = "result_type"
+        }
+    }
+
+    struct Datasource: Sendable, Codable {
+        let sourcename: String?
+        let attribution: String?
+        let license: String?
+        let url: String?
+    }
+
+    let results: [Result]
+}
+
+private extension String {
+    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+}
