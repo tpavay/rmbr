@@ -2,6 +2,138 @@ import Photos
 import SwiftUI
 import UIKit
 
+/// Everything the thumbnail store needs from PhotoKit.
+///
+/// Local identifiers are the currency rather than `PHAsset`, because a `PHAsset` cannot
+/// exist without a photo library. Naming this as a protocol is what lets the behaviour
+/// that matters when a grant ends - cancelling in flight requests, releasing resolved
+/// assets, refusing answers that arrive afterwards - be observed on a machine with no
+/// library and no permission sheet.
+@MainActor
+protocol ThumbnailImageSource: AnyObject {
+    /// Resolves identifiers away from the main actor, answering those that resolved.
+    func resolve(_ identifiers: [String]) async -> [String]
+
+    /// Issues one request. `deliver` reports each pass with whether it is the degraded
+    /// one, and nil when the request came back with nothing.
+    func requestImage(
+        identifier: String,
+        targetSize: CGSize,
+        allowNetwork: Bool,
+        deliver: @escaping @MainActor (UIImage?, Bool) -> Void
+    ) -> Int
+
+    func cancel(_ requestID: Int)
+    func startCaching(_ identifiers: [String], targetSize: CGSize)
+    func stopCaching(_ identifiers: [String], targetSize: CGSize)
+
+    /// Drops every asset resolved under the grant that has just ended, and refuses any
+    /// resolution still in flight from before it.
+    func releaseResolved()
+}
+
+/// The real library.
+@MainActor
+final class PhotoKitImageSource: ThumbnailImageSource {
+    private let manager = PHCachingImageManager()
+    private let assets = NSCache<NSString, PHAsset>()
+    /// Bumped by every release. A fetch issued before one describes a grant that has
+    /// since been narrowed, so its answer never reaches the cache.
+    private var releases = 0
+
+    init() {
+        assets.countLimit = 1_000
+    }
+
+    /// `fetchAssets` is a Photos database read, and a scroll cannot be made to wait on
+    /// one. A lookup that comes back empty is not remembered, so an asset PhotoKit failed
+    /// to resolve once is asked for again the next time it appears rather than being
+    /// pinned to a placeholder for the rest of the session.
+    func resolve(_ identifiers: [String]) async -> [String] {
+        var missing: [String] = []
+        for identifier in identifiers
+        where assets.object(forKey: identifier as NSString) == nil && !missing.contains(identifier) {
+            missing.append(identifier)
+        }
+
+        if !missing.isEmpty {
+            let issued = releases
+            let wanted = missing
+            let fetched = await Task.detached(priority: .userInitiated) { () -> [PHAsset] in
+                let result = PHAsset.fetchAssets(withLocalIdentifiers: wanted, options: nil)
+                var assets: [PHAsset] = []
+                result.enumerateObjects { asset, _, _ in assets.append(asset) }
+                return assets
+            }.value
+            guard issued == releases else { return [] }
+            for asset in fetched {
+                assets.setObject(asset, forKey: asset.localIdentifier as NSString)
+            }
+        }
+
+        return identifiers.filter { assets.object(forKey: $0 as NSString) != nil }
+    }
+
+    func requestImage(
+        identifier: String,
+        targetSize: CGSize,
+        allowNetwork: Bool,
+        deliver: @escaping @MainActor (UIImage?, Bool) -> Void
+    ) -> Int {
+        guard let asset = assets.object(forKey: identifier as NSString) else {
+            deliver(nil, false)
+            return Int(PHInvalidImageRequestID)
+        }
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .opportunistic
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = allowNetwork
+
+        let requestID = manager.requestImage(
+            for: asset,
+            targetSize: targetSize,
+            contentMode: .aspectFill,
+            options: options
+        ) { image, info in
+            MainActor.assumeIsolated {
+                deliver(image, (info?[PHImageResultIsDegradedKey] as? Bool) ?? false)
+            }
+        }
+        return Int(requestID)
+    }
+
+    func cancel(_ requestID: Int) {
+        manager.cancelImageRequest(PHImageRequestID(requestID))
+    }
+
+    func startCaching(_ identifiers: [String], targetSize: CGSize) {
+        manager.startCachingImages(
+            for: resolved(identifiers),
+            targetSize: targetSize,
+            contentMode: .aspectFill,
+            options: nil
+        )
+    }
+
+    func stopCaching(_ identifiers: [String], targetSize: CGSize) {
+        manager.stopCachingImages(
+            for: resolved(identifiers),
+            targetSize: targetSize,
+            contentMode: .aspectFill,
+            options: nil
+        )
+    }
+
+    func releaseResolved() {
+        releases += 1
+        assets.removeAllObjects()
+    }
+
+    private func resolved(_ identifiers: [String]) -> [PHAsset] {
+        identifiers.compactMap { assets.object(forKey: $0 as NSString) }
+    }
+}
+
 /// Delivers pixels for a media reference.
 ///
 /// rmbr keeps no copies of anybody's photographs. Every image on screen comes from
@@ -21,9 +153,8 @@ import UIKit
 @MainActor
 @Observable
 final class ThumbnailStore {
-    private let manager = PHCachingImageManager()
+    private let source: ThumbnailImageSource
     private let images = NSCache<NSString, UIImage>()
-    private let assets = NSCache<NSString, PHAsset>()
     private var inFlight: [String: Request] = [:]
     private var preheated: [String: Preheat] = [:]
     private var preheatWork: [String: Task<Void, Never>] = [:]
@@ -35,24 +166,32 @@ final class ThumbnailStore {
     /// One PhotoKit request and everybody waiting on it.
     @MainActor
     private final class Request {
-        var requestID: PHImageRequestID?
+        var requestID: Int?
         var consumers: [UUID: AsyncStream<UIImage>.Continuation] = [:]
     }
 
     private struct Preheat {
-        let assets: [PHAsset]
+        let identifiers: [String]
         let targetSize: CGSize
     }
 
-    init() {
+    init(source: ThumbnailImageSource = PhotoKitImageSource()) {
+        self.source = source
         images.totalCostLimit = 48 * 1024 * 1024
         images.countLimit = 200
-        assets.countLimit = 1_000
     }
 
     /// What is already decoded at this size, if anything.
     func cachedImage(for reference: MediaReference, targetSize: CGSize) -> UIImage? {
         images.object(forKey: Self.key(reference.localIdentifier, targetSize) as NSString)
+    }
+
+    /// What a view holding these pixels is allowed to draw now.
+    ///
+    /// The generation travels with the image, so a purge stops it being drawn in the same
+    /// main-actor turn rather than whenever the view's fetch gets round to restarting.
+    func visibleImage(_ delivered: DeliveredImage?) -> UIImage? {
+        delivered?.pixels(inGeneration: generation)
     }
 
     /// Every delivery PhotoKit makes for one request, the degraded pass first.
@@ -99,44 +238,30 @@ final class ThumbnailStore {
         preheatWork[window]?.cancel()
         preheatWork[window] = Task { @MainActor [weak self] in
             guard let self else { return }
-            let wanted = await self.assets(for: identifiers)
-            guard !Task.isCancelled else { return }
+            let issued = self.generation
+            let wanted = await self.source.resolve(identifiers)
+            guard !Task.isCancelled, issued == self.generation else { return }
             let previous = self.preheated[window]
             if let previous {
-                let keep = Set(wanted.map(\.localIdentifier))
-                let dropped = previous.assets.filter { !keep.contains($0.localIdentifier) }
+                let keep = Set(wanted)
+                let dropped = previous.identifiers.filter { !keep.contains($0) }
                 if !dropped.isEmpty {
-                    self.manager.stopCachingImages(
-                        for: dropped,
-                        targetSize: previous.targetSize,
-                        contentMode: .aspectFill,
-                        options: nil
-                    )
+                    self.source.stopCaching(dropped, targetSize: previous.targetSize)
                 }
             }
-            let held = Set(previous?.assets.map(\.localIdentifier) ?? [])
-            let added = wanted.filter { !held.contains($0.localIdentifier) }
+            let held = Set(previous?.identifiers ?? [])
+            let added = wanted.filter { !held.contains($0) }
             if !added.isEmpty {
-                self.manager.startCachingImages(
-                    for: added,
-                    targetSize: targetSize,
-                    contentMode: .aspectFill,
-                    options: nil
-                )
+                self.source.startCaching(added, targetSize: targetSize)
             }
-            self.preheated[window] = Preheat(assets: wanted, targetSize: targetSize)
+            self.preheated[window] = Preheat(identifiers: wanted, targetSize: targetSize)
         }
     }
 
     func stopPreheating(window: String) {
         preheatWork.removeValue(forKey: window)?.cancel()
         guard let preheat = preheated.removeValue(forKey: window) else { return }
-        manager.stopCachingImages(
-            for: preheat.assets,
-            targetSize: preheat.targetSize,
-            contentMode: .aspectFill,
-            options: nil
-        )
+        source.stopCaching(preheat.identifiers, targetSize: preheat.targetSize)
     }
 
     /// Releases everything that came from the library as it was.
@@ -148,14 +273,14 @@ final class ThumbnailStore {
     func purge() {
         generation += 1
         for key in Array(inFlight.keys) {
-            if let requestID = inFlight[key]?.requestID { manager.cancelImageRequest(requestID) }
+            if let requestID = inFlight[key]?.requestID { source.cancel(requestID) }
             finish(key)
         }
         for work in preheatWork.values { work.cancel() }
         preheatWork.removeAll()
         for window in Array(preheated.keys) { stopPreheating(window: window) }
         images.removeAllObjects()
-        assets.removeAllObjects()
+        source.releaseResolved()
     }
 
     private func begin(
@@ -181,37 +306,29 @@ final class ThumbnailStore {
         request.consumers[token] = continuation
         inFlight[key] = request
 
-        let asset = await asset(for: reference.localIdentifier)
+        let resolved = await source.resolve([reference.localIdentifier])
         // Everybody may have scrolled away while the identifier was being resolved.
         guard inFlight[key] === request else { return }
-        guard let asset else {
+        guard resolved.contains(reference.localIdentifier) else {
             finish(key)
             return
         }
 
-        let options = PHImageRequestOptions()
-        options.deliveryMode = .opportunistic
-        options.resizeMode = .fast
-        options.isNetworkAccessAllowed = allowNetwork
-
-        let requestID = manager.requestImage(
-            for: asset,
+        let requestID = source.requestImage(
+            identifier: reference.localIdentifier,
             targetSize: targetSize,
-            contentMode: .aspectFill,
-            options: options
-        ) { [weak self] image, info in
-            MainActor.assumeIsolated {
-                self?.deliver(image, info: info, forKey: key, from: request)
-            }
+            allowNetwork: allowNetwork
+        ) { [weak self] image, isDegraded in
+            self?.deliver(image, isDegraded: isDegraded, forKey: key, from: request)
         }
-        // A fast delivery can land before `requestImage` returns, in which case this
-        // request is already finished and the identifier belongs to nothing.
+        // A fast delivery can land before the request returns, in which case this request
+        // is already finished and the identifier belongs to nothing.
         if inFlight[key] === request { request.requestID = requestID }
     }
 
     private func deliver(
         _ image: UIImage?,
-        info: [AnyHashable: Any]?,
+        isDegraded: Bool,
         forKey key: String,
         from request: Request
     ) {
@@ -223,7 +340,6 @@ final class ThumbnailStore {
             return
         }
         for continuation in request.consumers.values { continuation.yield(image) }
-        let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
         guard !isDegraded else { return }
         images.setObject(image, forKey: key as NSString, cost: Self.cost(of: image))
         finish(key)
@@ -239,49 +355,7 @@ final class ThumbnailStore {
         request.consumers.removeValue(forKey: token)
         guard request.consumers.isEmpty else { return }
         inFlight.removeValue(forKey: key)
-        if let requestID = request.requestID { manager.cancelImageRequest(requestID) }
-    }
-
-    /// Resolves an identifier away from the main actor.
-    ///
-    /// `fetchAssets` is a Photos database read, and a scroll cannot be made to wait on
-    /// one. A lookup that comes back empty is not remembered, so an asset PhotoKit
-    /// failed to resolve once is asked for again the next time it appears rather than
-    /// being pinned to a placeholder for the rest of the session.
-    private func asset(for localIdentifier: String) async -> PHAsset? {
-        if let asset = assets.object(forKey: localIdentifier as NSString) { return asset }
-        return await self.assets(for: [localIdentifier]).first
-    }
-
-    private func assets(for localIdentifiers: [String]) async -> [PHAsset] {
-        var resolved: [String: PHAsset] = [:]
-        var missing: [String] = []
-        for identifier in localIdentifiers {
-            if let asset = assets.object(forKey: identifier as NSString) {
-                resolved[identifier] = asset
-            } else if !missing.contains(identifier) {
-                missing.append(identifier)
-            }
-        }
-
-        if !missing.isEmpty {
-            let issued = generation
-            let fetched = await Task.detached(priority: .userInitiated) { () -> [PHAsset] in
-                let result = PHAsset.fetchAssets(withLocalIdentifiers: missing, options: nil)
-                var assets: [PHAsset] = []
-                result.enumerateObjects { asset, _, _ in assets.append(asset) }
-                return assets
-            }.value
-            // A purge landed while PhotoKit was answering, so these belong to a grant
-            // that no longer applies.
-            guard issued == generation else { return [] }
-            for asset in fetched {
-                assets.setObject(asset, forKey: asset.localIdentifier as NSString)
-                resolved[asset.localIdentifier] = asset
-            }
-        }
-
-        return localIdentifiers.compactMap { resolved[$0] }
+        if let requestID = request.requestID { source.cancel(requestID) }
     }
 
     private static func cost(of image: UIImage) -> Int {
@@ -318,8 +392,6 @@ struct MediaThumbnail: View {
     var targetSize: CGSize = CGSize(width: 600, height: 600)
     var allowNetwork = false
 
-    private var image: UIImage? { delivered?.pixels(inGeneration: store.generation) }
-
     var body: some View {
         // The pixels sit in an overlay rather than a stack, so an aspect-fill image can
         // never drive the layout: the frame the caller asked for is the frame this
@@ -327,7 +399,7 @@ struct MediaThumbnail: View {
         Rectangle()
             .fill(Palette.smokedGlass)
             .overlay {
-                if let image {
+                if let image = store.visibleImage(delivered) {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()

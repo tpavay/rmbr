@@ -115,7 +115,24 @@ struct LibrarySource: Sendable {
     ) async throws -> PhotoLibraryIndexer.Output = {
         try PhotoLibraryIndexer(timeZone: $0).buildIndex(progress: $1)
     }
+
+    /// Reached by a composition pass between finishing its work and committing it. It
+    /// does nothing in the app; a test holds one pass open here while another lands, which
+    /// is the only way to stage a stale commit without waiting on a clock.
+    var beforeCommit: @Sendable () async -> Void = {}
 }
+
+/// What the model needs from the place-name resolver.
+///
+/// The live one talks to Geoapify. Naming it as a protocol is what lets the ordering
+/// rules around the ledger be tested without a network call or a key.
+protocol PlaceResolving: Sendable {
+    var currentLedger: PlaceLabelLedger { get async }
+    func persistPendingLabels() async -> Bool
+    func resolve(_ lookups: [PendingPlaceLookup]) async -> (PlaceLabelLedger, PlaceResolutionReport)
+}
+
+extension PlaceNameResolver: PlaceResolving {}
 
 /// Everything the interface reads, and the only thing that talks to the sources.
 @MainActor
@@ -142,10 +159,14 @@ final class LibraryModel {
     /// outside this model - decoded thumbnails above all - belongs to one generation and
     /// must be released when it ends, because the next one may be allowed to see less.
     private(set) var libraryGeneration = 0
-    /// Bumped whenever the installed index changes - dropped by an invalidation, or
-    /// replaced by a load that committed. Work that only makes sense against an index
-    /// belongs to one revision of it, and runs again when this moves.
-    private(set) var indexRevision = 0
+    /// Bumped when a reconstruction is committed, and when one is dropped.
+    ///
+    /// A committed reconstruction is one that has been walked, persisted and checked
+    /// against the grant and the library signature that are current now - not one whose
+    /// index has merely been installed. Work that may only run against a library rmbr is
+    /// confirmed to be allowed to read - a reverse-geocode above all, because it sends a
+    /// coordinate off the device - is keyed to this rather than to the index itself.
+    private(set) var committedRevision = 0
 
     /// Owned rather than observed, so that dropping the library and dropping the pixels
     /// drawn from it are one operation and cannot be separated by a suspension point.
@@ -154,7 +175,7 @@ final class LibraryModel {
     let tuning = ReconstructionTuningProfile.v1
     private let source: LibrarySource
     private let composer: DayComposer
-    private let resolver = PlaceNameResolver()
+    private let resolver: PlaceResolving
     private let credentials = GeoapifyCredentialStore()
     private let cache = DayCache()
 
@@ -170,7 +191,10 @@ final class LibraryModel {
     /// whether a pass is already draining them. One pass at a time is what stops two
     /// lookups composing the same days against two different ledgers.
     private var pendingRefreshCoordinates: [Coordinate] = []
-    private var isRefreshingDays = false
+    /// The generation whose pass owns the queue, if one is running. Ownership ends with
+    /// the generation it belongs to, so a worker stranded by an invalidation cannot leave
+    /// a later generation's coordinates with nobody to drain them.
+    private var refreshWorkerGeneration: Int?
     private var signalsByDate: [LocalDate: DaySignals] = [:]
     private var hasStarted = false
     private var isLoading = false
@@ -183,8 +207,12 @@ final class LibraryModel {
     private var currentSignature: LibrarySignature?
     private var builtForDay: LocalDate?
 
-    init(source: LibrarySource = LibrarySource()) {
+    init(
+        source: LibrarySource = LibrarySource(),
+        resolver: PlaceResolving = PlaceNameResolver()
+    ) {
         self.source = source
+        self.resolver = resolver
         self.composer = DayComposer(tuning: .v1, boundaryPolicy: MidnightDayBoundaryPolicy())
     }
 
@@ -282,9 +310,10 @@ final class LibraryModel {
     /// asset, in-flight request and preheated window the thumbnail store still holds.
     private func invalidateLibrary() {
         libraryGeneration += 1
-        indexRevision += 1
+        committedRevision += 1
         index = nil
         pendingRefreshCoordinates = []
+        refreshWorkerGeneration = nil
         currentSignature = nil
         builtForDay = nil
         lifeEntries = []
@@ -371,7 +400,6 @@ final class LibraryModel {
                 // the previous generation is still being served when this one starts.
                 invalidateLibrary()
                 index = snapshot.index
-                indexRevision += 1
                 metrics = snapshot.metrics
                 indexBuiltAt = snapshot.builtAt
                 loadedFromCache = true
@@ -424,7 +452,6 @@ final class LibraryModel {
             }
             let built = CaptureIndex(records: output.records, timeZone: timeZone)
             index = built
-            indexRevision += 1
             metrics = output.metrics
             indexBuiltAt = Date()
             currentSignature = signature
@@ -516,6 +543,10 @@ final class LibraryModel {
         }
         builtForDay = today
         phase = .ready
+        // Committed here and nowhere else: only now is this library one rmbr has
+        // confirmed it is still allowed to read, which is what work that leaves the
+        // device is allowed to run against.
+        committedRevision += 1
         printReconstructionReport()
     }
 
@@ -689,8 +720,13 @@ final class LibraryModel {
     }
 
     /// Fetches any place labels this day wants and recomposes it once they land.
+    ///
+    /// A reverse-geocode is the only thing rmbr ever sends off the device, so it is asked
+    /// for only against a committed reconstruction. An index that has been installed but
+    /// not yet checked against the current grant may still be thrown away, and a
+    /// coordinate cannot be recalled once it has left on the strength of one.
     func resolvePlaceNames(for date: LocalDate) async {
-        guard let index else { return }
+        guard hasCommittedIndex, let index else { return }
         let records = index.records(on: date)
         let result = composer.compose(
             date: date,
@@ -703,9 +739,10 @@ final class LibraryModel {
             )
         )
         guard !result.pendingPlaceLookups.isEmpty else { return }
-        // Keyed to the index it is asking about, so a lookup still in flight against a
-        // library that has been replaced cannot stop this day being resolved again.
-        let key = "\(indexRevision):\(date.description)"
+        // Keyed to the reconstruction it is asking about, so a lookup still in flight
+        // against a library that has been replaced cannot stop this day being resolved
+        // again.
+        let key = "\(committedRevision):\(date.description)"
         guard !placeRequestsInFlight.contains(key) else { return }
         placeRequestsInFlight.insert(key)
         defer { placeRequestsInFlight.remove(key) }
@@ -753,9 +790,12 @@ final class LibraryModel {
         // coordinates at the same time, and two passes composing the same days against two
         // different ledgers would race to commit; queued behind this one, the later
         // coordinates are answered by a pass that reads the ledger after both have landed.
-        guard !isRefreshingDays else { return }
-        isRefreshingDays = true
-        defer { isRefreshingDays = false }
+        // Ownership belongs to a generation: an invalidation releases it, so a pass left
+        // over from the library that has just gone cannot hold the queue shut.
+        let owned = libraryGeneration
+        guard refreshWorkerGeneration != owned else { return }
+        refreshWorkerGeneration = owned
+        defer { if refreshWorkerGeneration == owned { refreshWorkerGeneration = nil } }
 
         let composer = composer
         let cache = cache
@@ -795,6 +835,7 @@ final class LibraryModel {
                     ).day
                 }
             }.value
+            await source.beforeCommit()
 
             guard libraryGeneration == generation else { return }
             // A lookup landed while this pass composed, so these days are named by a

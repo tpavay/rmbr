@@ -10,33 +10,48 @@ struct MonthView: View {
     let month: Month
 
     var body: some View {
-        let dates = model.dates(in: month)
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                if let representative = model.representative(for: month) {
-                    Text(reasonText(representative.reason))
-                        .font(.utility(12))
-                        .foregroundStyle(Palette.dustyZinc)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 12)
-                }
-                ForEach(dates, id: \.description) { date in
-                    NavigationLink {
-                        DayPageView(date: date)
-                    } label: {
-                        MonthDayRow(date: date)
+        content
+            .background(Palette.deepInk.ignoresSafeArea())
+            .navigationTitle(DayFormatting.monthTitle(month))
+            .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        // Without a committed index every day in the month reads as absent, which would
+        // print a month that held nothing rather than a month rmbr cannot describe yet.
+        if model.hasCommittedIndex {
+            let dates = model.dates(in: month)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if let representative = model.representative(for: month) {
+                        Text(reasonText(representative.reason))
+                            .font(.utility(12))
+                            .foregroundStyle(Palette.dustyZinc)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 12)
                     }
-                    .buttonStyle(.plain)
+                    ForEach(dates, id: \.description) { date in
+                        NavigationLink {
+                            DayPageView(date: date)
+                        } label: {
+                            MonthDayRow(date: date)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    PlaceAttributionFooter(attributions: attributions(for: dates))
+                        .padding(.horizontal, 20)
+                        .padding(.top, 16)
                 }
-                PlaceAttributionFooter(attributions: attributions(for: dates))
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
+                .padding(.vertical, 16)
             }
-            .padding(.vertical, 16)
+        } else {
+            LibraryStateNotice(
+                heading: DayFormatting.monthTitle(month),
+                subject: "month",
+                phase: model.phase
+            )
         }
-        .background(Palette.deepInk.ignoresSafeArea())
-        .navigationTitle(DayFormatting.monthTitle(month))
-        .navigationBarTitleDisplayMode(.inline)
     }
 
     /// The credit owed by the stored labels these rows print.
