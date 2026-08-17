@@ -1,0 +1,122 @@
+import Foundation
+@testable import rmbr
+
+/// Builds normalised capture records without a photo library.
+///
+/// The engine is written against `CaptureRecord` rather than `PHAsset` precisely so
+/// this is possible: every rule below is exercised on a laptop, deterministically, with
+/// no device, no permission sheet and no network.
+enum Fixture {
+    static let chicago = TimeZone(identifier: "America/Chicago")!
+    static let baltimore = TimeZone(identifier: "America/New_York")!
+
+    static func capture(
+        _ time: String,
+        on date: LocalDate,
+        in timeZone: TimeZone,
+        kind: MediaKind = .photo,
+        coordinate: Coordinate? = nil,
+        accuracy: Double? = nil,
+        isScreenshot: Bool = false,
+        isScreenRecording: Bool = false,
+        isHidden: Bool = false,
+        isFavorite: Bool = false,
+        hasAdjustments: Bool = false,
+        duration: TimeInterval? = nil,
+        identifier: String? = nil
+    ) -> CaptureRecord {
+        let parts = time.split(separator: ":").map { Int($0) ?? 0 }
+        var components = DateComponents()
+        components.year = date.year
+        components.month = date.month
+        components.day = date.day
+        components.hour = parts.count > 0 ? parts[0] : 0
+        components.minute = parts.count > 1 ? parts[1] : 0
+        components.second = parts.count > 2 ? parts[2] : 0
+        components.timeZone = timeZone
+        let instant = RmbrCalendar.calendar(in: timeZone).date(from: components)!
+        let id = identifier ?? "\(date)-\(time)-\(kind.rawValue)"
+
+        return CaptureRecord(
+            id: MediaID(id),
+            localIdentifier: id,
+            kind: kind,
+            captureTime: .floatingLocal(from: instant, readIn: timeZone),
+            instant: instant,
+            duration: duration,
+            pixelWidth: 4032,
+            pixelHeight: 3024,
+            isFavorite: isFavorite,
+            hasAdjustments: hasAdjustments,
+            isScreenshot: isScreenshot,
+            isScreenRecording: isScreenRecording,
+            isHidden: isHidden,
+            burstIdentifier: nil,
+            isRepresentativeBurstFrame: true,
+            representedBurstFrames: 0,
+            coordinate: coordinate,
+            horizontalAccuracyMetres: accuracy
+        )
+    }
+
+    static func context(
+        timeZone: TimeZone = chicago,
+        fullAccess: Bool = true,
+        labels: DayComposer.PlaceLabelLookup = .empty
+    ) -> DayComposer.Context {
+        DayComposer.Context(
+            timeZone: timeZone,
+            hasFullLibraryAccess: fullAccess,
+            placeLabels: labels,
+            composedAt: Date(timeIntervalSince1970: 1_760_000_000)
+        )
+    }
+
+    static func label(
+        _ text: String,
+        specificity: PlaceSpecificity = .venue,
+        origin: PlaceLabelOrigin = .providerPOI
+    ) -> ResolvedPlaceLabel {
+        ResolvedPlaceLabel(
+            text: text,
+            specificity: specificity,
+            origin: origin,
+            confidence: nil,
+            provider: "geoapify",
+            attribution: OpenStreetMap.attribution,
+            fetchedAt: Date(timeIntervalSince1970: 1_760_000_000)
+        )
+    }
+
+    /// A lookup that names everything, for tests about what a label does once it exists.
+    static func namingEverything(_ text: String) -> DayComposer.PlaceLabelLookup {
+        DayComposer.PlaceLabelLookup { _ in label(text) }
+    }
+
+    /// The short time string this locale prints for a wall-clock hour and minute.
+    ///
+    /// Built and formatted inside one zone, so it depends on the components alone. A
+    /// printed time that came from converting an instant into some other zone will not
+    /// match it, which is the whole point of asserting against it.
+    static func shortTime(hour: Int, minute: Int) -> String {
+        let zone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let date = calendar.date(from: DateComponents(
+            year: 2000, month: 1, day: 1, hour: hour, minute: minute
+        ))!
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        formatter.timeZone = zone
+        return formatter.string(from: date)
+    }
+
+    /// Moves a coordinate north by a number of metres.
+    static func offset(_ coordinate: Coordinate, metresNorth: Double) -> Coordinate {
+        Coordinate(
+            latitude: coordinate.latitude + metresNorth / 110_574,
+            longitude: coordinate.longitude
+        )
+    }
+}

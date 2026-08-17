@@ -237,7 +237,7 @@ ____
 
 ### 4.1 Heuristic tuning
 
-The constants live at the top of `rmbr/DayReconstruction.swift` in `enum MomentHeuristic`.
+The constants lived in the spike's `rmbr/DayReconstruction.swift`, in `enum MomentHeuristic`, and went with it when the spike was deleted; the engine's equivalents are in `ReconstructionTuningProfile`.
 Values used for the runs above:
 
 | Constant | Value used |

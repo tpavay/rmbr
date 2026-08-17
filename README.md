@@ -2,24 +2,40 @@
 
 An iOS app that remembers your days for you.
 
-rmbr reconstructs each day automatically from the photos, places and health data your
-phone already has, so you never have to write anything down. Apple Journal asks you to
-write. rmbr never does.
+rmbr reconstructs each day automatically from what your phone already has, so you never
+have to write anything down. Apple Journal asks you to write. rmbr never does.
 
 ## Status
 
-Phase 0. Nothing is built yet beyond a measurement spike whose only job is to establish
-what iOS will actually hand a freshly installed app about a person's past.
+Milestone 1: the reconstruction engine, and a deliberately rough surface for reading a
+day. It rebuilds days from **photographs only** - no calendar, no health data, no
+location history.
 
-See `docs/phase-0-findings.md` for the findings, and for the data model they imply.
+That is not a shortcut. rmbr asks for photographs before the paywall and asks for
+everything else after it, so the first days a new user ever sees are built from
+photographs alone. This is that screen's engine.
 
-## Running the spike
+A rebuilt past day has a place only where a photograph carried coordinates, because no
+public API returns location history from before the app was installed. A day with no
+geotagged photograph shows no place at all, and rmbr does not guess one.
 
-Open `rmbr.xcodeproj`, set Signing & Capabilities > Team on the `rmbr` target to your own
-team, and run on a physical iPhone. The simulator builds and runs, but its numbers say
-nothing about a real library and the app prints a banner saying so.
+## Running it
 
-Mode A surveys how much past exists. Mode B reconstructs a single chosen day. Both render
-to one monospaced text view with a share button; that text is the entire interface, and it
-is meant to be read once and thrown away.
+Open `rmbr.xcodeproj` and run; device builds sign with the team already committed in the
+project (see `AGENTS.md`). Grant full access to the photo library when asked; limited
+access works, but every count rmbr shows is then a count of what it can see rather than
+of what exists.
 
+Place names need a Geoapify API key, entered once in the reconstruction sheet behind the
+gauge control in the top right. Without one, days still rebuild - they just have
+coordinates instead of names.
+
+## What is where
+
+- `docs/reconstruction-engine.md` - what the engine does, where the code is, and every
+  place it departs from its specification.
+- `docs/phase-0-findings.md` - the surviving artefact of the measurement spike that came
+  before it.
+- `AGENTS.md` - build and test commands, and the sharp edges.
+
+Place names © OpenStreetMap contributors, via Geoapify.
