@@ -28,12 +28,25 @@ struct MonthView: View {
                     }
                     .buttonStyle(.plain)
                 }
+                PlaceAttributionFooter(attributions: attributions(for: dates))
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
             }
             .padding(.vertical, 16)
         }
         .background(Palette.deepInk.ignoresSafeArea())
         .navigationTitle(DayFormatting.monthTitle(month))
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// The credit owed by the stored labels these rows print.
+    private func attributions(for dates: [LocalDate]) -> [String] {
+        var lines: [String] = []
+        for date in dates {
+            guard let line = model.summary(for: date).attribution else { continue }
+            if !lines.contains(line) { lines.append(line) }
+        }
+        return lines
     }
 
     /// One reason code, expressed as a sentence, never a score.
@@ -54,7 +67,10 @@ private struct MonthDayRow: View {
     let date: LocalDate
 
     var body: some View {
-        let day = model.day(for: date)
+        // A row states what the archive survey already established about the day. The
+        // day itself is composed when it is opened and not before, so listing a month
+        // costs nothing that reading one of its days costs (RQ-069).
+        let summary = model.summary(for: date)
         HStack(alignment: .center, spacing: 14) {
             Text("\(date.day)")
                 .font(.editorial(20))
@@ -63,12 +79,11 @@ private struct MonthDayRow: View {
                 .monospacedDigit()
 
             VStack(alignment: .leading, spacing: 2) {
-                let facts = DayFormatting.keyFacts(for: day)
-                Text(facts.first ?? "Nothing recorded")
+                Text(summary.headline)
                     .font(.utility(14))
-                    .foregroundStyle(facts.isEmpty ? Palette.dustyZinc : Palette.moonlightWhite)
-                if facts.count > 1 {
-                    Text(facts.dropFirst().joined(separator: " · "))
+                    .foregroundStyle(summary.isEmpty ? Palette.dustyZinc : Palette.moonlightWhite)
+                if let detail = summary.detail {
+                    Text(detail)
                         .font(.utility(12))
                         .foregroundStyle(Palette.dustyZinc)
                 }

@@ -111,12 +111,9 @@ struct GeoapifyReverseGeocoder: Sendable {
         if let city = (result.city ?? result.town ?? result.village)?.trimmed, !city.isEmpty {
             return make(city, .city, .providerGeography)
         }
-        if let state = result.state?.trimmed, !state.isEmpty {
-            return make(state, .region, .providerGeography)
-        }
-        if let country = result.country?.trimmed, !country.isEmpty {
-            return make(country, .country, .providerGeography)
-        }
+        // The cascade stops at the city. A day labelled by its state or its country says
+        // nothing a person would recognise as where they were, so the place phrase is
+        // omitted entirely rather than widened until something matches.
         return nil
     }
 }

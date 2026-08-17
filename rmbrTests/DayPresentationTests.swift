@@ -107,7 +107,35 @@ struct DayPresentationTests {
         let capture = Fixture.capture("18:42:00", on: date, in: Fixture.baltimore)
         let inBaltimore = DayFormatting.time(capture.captureTime, in: Fixture.baltimore)
         let inChicago = DayFormatting.time(capture.captureTime, in: Fixture.chicago)
+        // Reading the same photograph in another zone must not move its hour, and the
+        // hour it keeps is the one it was taken at - not the instant seen from anywhere.
         #expect(inBaltimore == inChicago)
-        #expect(inBaltimore.contains("42"))
+        #expect(inBaltimore == Fixture.shortTime(hour: 18, minute: 42))
+    }
+
+    @Test("A day with photographs rmbr can see never reads as empty")
+    func limitedAccessRowStatesWhatIsVisible() {
+        let captures = [Fixture.capture("09:05:00", on: date, in: Fixture.chicago)]
+        let limited = composer.compose(
+            date: date,
+            captures: captures,
+            context: Fixture.context(fullAccess: false)
+        ).day
+        // Limited access leaves the raw counts unknown, so there is no key fact to print.
+        #expect(DayFormatting.keyFacts(for: limited).isEmpty)
+        #expect(DayFormatting.rowFallback(for: limited) == "1 capture rmbr can see")
+        #expect(DayFormatting.rowFallback(for: day([])) == "Nothing recorded")
+    }
+
+    @Test("A moment the budget showed nothing of states what it holds")
+    func unshownMomentStatesItsContents() {
+        let references = [
+            Fixture.capture("11:00:00", on: date, in: Fixture.chicago),
+            Fixture.capture("11:01:00", on: date, in: Fixture.chicago),
+            Fixture.capture("11:02:00", on: date, in: Fixture.chicago, kind: .video, duration: 12)
+        ].map { $0.mediaReference() }
+        #expect(DayFormatting.mediaComposition(of: references) == "2 photographs and 1 video")
+        #expect(DayFormatting.mediaComposition(of: [references[0]]) == "1 photograph")
+        #expect(DayFormatting.mediaComposition(of: []) == nil)
     }
 }

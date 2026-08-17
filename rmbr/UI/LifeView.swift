@@ -7,6 +7,7 @@ import SwiftUI
 /// the reconstruction honestly.
 struct LifeView: View {
     @Environment(LibraryModel.self) private var model
+    @Environment(ThumbnailStore.self) private var thumbnails
     @State private var showingDiagnostics = false
 
     var body: some View {
@@ -94,9 +95,45 @@ struct LifeView: View {
                         EmptyMonthRow(month: month, reason: reason)
                     }
                 }
+                PlaceAttributionFooter(attributions: model.placeAttributions)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
             }
             .padding(.bottom, 48)
+            .scrollTargetLayout()
         }
+        // PhotoKit is told what is about to be needed rather than being asked for it a
+        // row at a time as it arrives on screen.
+        .onScrollTargetVisibilityChange(idType: String.self) { visible in
+            preheatCovers(around: visible)
+        }
+        .onDisappear { thumbnails.stopPreheating(window: Self.preheatWindow) }
+    }
+
+    private static let preheatWindow = "life"
+    private static let coverTargetSize = CGSize(width: 220, height: 220)
+    /// Rows either side of what is visible that are worth having decoded already.
+    private static let preheatMargin = 8
+
+    private func preheatCovers(around visibleIDs: [String]) {
+        let entries = model.lifeEntries
+        let visible = Set(visibleIDs)
+        let indices = entries.indices.filter { visible.contains(entries[$0].id) }
+        guard let first = indices.min(), let last = indices.max() else { return }
+        let lower = max(entries.startIndex, first - Self.preheatMargin)
+        let upper = min(entries.endIndex - 1, last + Self.preheatMargin)
+
+        let references = entries[lower...upper].compactMap { entry -> MediaReference? in
+            guard case .day(let date, _) = entry else { return nil }
+            let day = model.day(for: date)
+            guard let coverID = day.media.coverMediaID else { return nil }
+            return day.media(coverID)
+        }
+        thumbnails.preheat(
+            references,
+            targetSize: Self.coverTargetSize,
+            window: Self.preheatWindow
+        )
     }
 }
 
@@ -153,7 +190,10 @@ private struct DayRow: View {
 
                 let facts = DayFormatting.keyFacts(for: day)
                 if facts.isEmpty {
-                    Text("Nothing recorded")
+                    // Limited access leaves the counts unknown, so a day with real
+                    // photographs on it can have no fact to state. It says what rmbr can
+                    // see rather than claiming the day held nothing.
+                    Text(DayFormatting.rowFallback(for: day))
                         .font(.utility(13))
                         .foregroundStyle(Palette.dustyZinc)
                 } else {

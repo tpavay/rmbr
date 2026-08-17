@@ -27,6 +27,8 @@ struct DiagnosticsView: View {
                         row("Geotagged", metrics.geotaggedCount.formatted())
                         row("Screenshots", metrics.screenshotCount.formatted())
                         row("Archive survey", seconds(model.surveySeconds))
+                        row("Days composed up front", model.composedDayCount.formatted())
+                        row("Backfill composition", seconds(model.composeSeconds))
                         row("Loaded from cache", model.loadedFromCache ? "yes" : "no")
                     } else {
                         Text("Not indexed yet.")
@@ -57,6 +59,11 @@ struct DiagnosticsView: View {
                         // A cap is stated out loud. Quietly returning fewer names would
                         // read as "these days had no places".
                         row("Skipped for daily budget", model.placeReport.skippedForBudget.formatted())
+                    }
+                    if !model.placeReport.labelsPersisted {
+                        // A label held only in memory is not the permanent record the
+                        // ledger promises, and will be asked for again next launch.
+                        row("Saved to ledger", "no")
                     }
                     if let error = model.placeReport.lastError {
                         Text(error)

@@ -8,6 +8,13 @@ struct PlaceResolutionReport: Sendable, Hashable {
     var failed: Int = 0
     /// Requests not made because the day's provider budget was already spent.
     var skippedForBudget: Int = 0
+    /// Whether the labels counted as resolved reached the ledger on disk. A label held
+    /// only in memory is not yet the permanent record the ledger promises to be, and
+    /// saying so is what stops a day quietly losing its name at the next launch.
+    var labelsPersisted: Bool = true
+    /// Never the provider's own error. The request URL carries the API key and the
+    /// coordinate, and a URL-loading error quotes that URL, so only a sanitised code
+    /// reaches this field.
     var lastError: String?
 }
 
@@ -107,12 +114,40 @@ actor PlaceNameResolver {
                 // A failure leaves the coordinate unanswered rather than recording a
                 // wrong or empty label, so a later run can try again (RQ-052).
                 report.failed += 1
-                report.lastError = String(describing: error)
+                report.lastError = Self.sanitised(error)
             }
         }
 
-        try? store.save(ledger)
+        do {
+            try store.save(ledger)
+        } catch {
+            // The labels stay in memory, so the day still reads correctly now, but the
+            // ledger did not become permanent and the next launch will ask again.
+            report.labelsPersisted = false
+            report.lastError = "Resolved labels could not be written to the ledger."
+        }
         return (ledger, report)
+    }
+
+    /// Turns a failure into something safe to print.
+    ///
+    /// `URLError` carries the failing URL, which holds the API key and the coordinate
+    /// that was looked up, and the report is rendered on screen.
+    private static func sanitised(_ error: Error) -> String {
+        switch error {
+        case let failure as GeoapifyReverseGeocoder.Failure:
+            switch failure {
+            case .missingAPIKey: return "No Geoapify key stored on this device."
+            case .badResponse(let status): return "The provider answered with HTTP \(status)."
+            case .decoding: return "The provider's answer could not be read."
+            }
+        case let urlError as URLError:
+            return "The request did not complete (URLError \(urlError.code.rawValue))."
+        case is CancellationError:
+            return "The lookup was cancelled."
+        default:
+            return "The lookup failed."
+        }
     }
 
     private func throttle() async {

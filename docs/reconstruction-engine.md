@@ -73,6 +73,12 @@ Older months contribute at most one representative day each, chosen by an ordere
 A month whose days all fail the positive-signal gate stays visibly thin rather than promoting its least bad day.
 Any other old day composes when it is opened, reached through the month destination.
 
+The window's days and every representative are composed and cached when indexing finishes, off the main actor, and the reconstruction report states how many days that was and what it cost.
+Listing a month composes nothing: its rows are built from the archive survey's per-day signals and the stored ledger, so opening a month stays a metadata read.
+
+The place-label ledger is excluded from backup, as the capture index is.
+It holds coordinates the person visited, and re-fetching labels after a restore is a cheaper loss than a copy of that leaving the device.
+
 ## Deliberate departures
 
 These are the places the implementation and the specifications disagree, and why.

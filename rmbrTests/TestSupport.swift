@@ -89,6 +89,25 @@ enum Fixture {
         DayComposer.PlaceLabelLookup { _ in label(text) }
     }
 
+    /// The short time string this locale prints for a wall-clock hour and minute.
+    ///
+    /// Built and formatted inside one zone, so it depends on the components alone. A
+    /// printed time that came from converting an instant into some other zone will not
+    /// match it, which is the whole point of asserting against it.
+    static func shortTime(hour: Int, minute: Int) -> String {
+        let zone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let date = calendar.date(from: DateComponents(
+            year: 2000, month: 1, day: 1, hour: hour, minute: minute
+        ))!
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        formatter.timeZone = zone
+        return formatter.string(from: date)
+    }
+
     /// Moves a coordinate north by a number of metres.
     static func offset(_ coordinate: Coordinate, metresNorth: Double) -> Coordinate {
         Coordinate(

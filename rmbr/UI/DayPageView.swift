@@ -7,9 +7,12 @@ import SwiftUI
 /// and nothing available is hidden.
 struct DayPageView: View {
     @Environment(LibraryModel.self) private var model
+    @Environment(ThumbnailStore.self) private var thumbnails
     let date: LocalDate
 
     @State private var viewerMediaID: MediaID?
+
+    private static let gridTargetSize = CGSize(width: 600, height: 600)
 
     var body: some View {
         let day = model.day(for: date)
@@ -30,9 +33,29 @@ struct DayPageView: View {
         .task(id: date.description) {
             await model.resolvePlaceNames(for: date)
         }
+        .onAppear { preheat(day) }
+        .onDisappear { thumbnails.stopPreheating(window: preheatWindow) }
         .sheet(item: $viewerMediaID) { mediaID in
             MediaViewer(day: day, startAt: mediaID)
         }
+    }
+
+    private var preheatWindow: String { "day-\(date.description)" }
+
+    /// The page's inline captures are a bounded set, so PhotoKit is told about all of
+    /// them at once rather than one grid cell at a time.
+    private func preheat(_ day: Day) {
+        var identifiers: [MediaID] = day.media.selectedMediaIDs
+        for moment in day.moments {
+            for mediaID in moment.displayedMediaIDs where !identifiers.contains(mediaID) {
+                identifiers.append(mediaID)
+            }
+        }
+        thumbnails.preheat(
+            identifiers.compactMap { day.media($0) },
+            targetSize: Self.gridTargetSize,
+            window: preheatWindow
+        )
     }
 
     // MARK: - Composition
@@ -172,20 +195,10 @@ struct DayPageView: View {
         .accessibilityElement(children: .combine)
     }
 
-    @ViewBuilder
     private func attribution(_ day: Day) -> some View {
-        let attributions = day.placeAttributions
-        if !attributions.isEmpty {
-            // Geoapify's terms require this wherever the stored location data is reused.
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(attributions, id: \.self) { line in
-                    Text("Place names \(line), via Geoapify")
-                        .font(.utility(11))
-                        .foregroundStyle(Palette.dustyZinc)
-                }
-            }
+        // Geoapify's terms require this wherever the stored location data is reused.
+        PlaceAttributionFooter(attributions: day.placeAttributions)
             .padding(.top, 8)
-        }
     }
 
     private func accessibilityLabel(for media: MediaReference, in day: Day, ordinal: Int) -> String {
@@ -259,11 +272,24 @@ private struct MomentRow: View {
                 }
             }
 
-            let hidden = moment.allMediaIDs.count - moment.displayedMediaIDs.count
-            if hidden > 0 {
-                Text("\(hidden) more from this moment")
-                    .font(.utility(11))
-                    .foregroundStyle(Palette.dustyZinc)
+            // The day's display budget is capped at ten captures, so a day with many
+            // moments leaves later ones with no thumbnail at all. A moment that showed
+            // nothing states what it holds; "more" would be more than nothing.
+            if displayed.isEmpty {
+                if let composition = DayFormatting.mediaComposition(
+                    of: moment.allMediaIDs.compactMap { day.media($0) }
+                ) {
+                    Text(composition)
+                        .font(.utility(11))
+                        .foregroundStyle(Palette.dustyZinc)
+                }
+            } else {
+                let hidden = moment.allMediaIDs.count - moment.displayedMediaIDs.count
+                if hidden > 0 {
+                    Text("\(hidden) more from this moment")
+                        .font(.utility(11))
+                        .foregroundStyle(Palette.dustyZinc)
+                }
             }
         }
         .padding(.vertical, 4)

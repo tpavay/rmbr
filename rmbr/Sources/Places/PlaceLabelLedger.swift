@@ -103,9 +103,11 @@ struct PlaceLabelLedger: Sendable, Codable {
 
 /// Reads and writes the ledger.
 ///
-/// Unlike the capture index, this is not excluded from backup: it is the one part of a
-/// photographs-only day that cannot be rebuilt for free, because rebuilding it means
-/// paying the provider again for labels rmbr is licensed to keep.
+/// Excluded from backup, like the capture index. Every entry here is a coordinate the
+/// person visited, and a backup would put that somewhere rmbr does not control. Asking
+/// the provider again for labels after a restore is the cheaper loss: it costs requests,
+/// where a copied ledger costs the promise that nothing about where they went leaves the
+/// device.
 struct PlaceLabelLedgerStore: Sendable {
     let fileURL: URL
 
@@ -119,6 +121,10 @@ struct PlaceLabelLedgerStore: Sendable {
             .first ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let directory = support.appendingPathComponent("rmbr-memory", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var excluded = URLResourceValues()
+        excluded.isExcludedFromBackup = true
+        var mutable = directory
+        try? mutable.setResourceValues(excluded)
         return directory
     }
 

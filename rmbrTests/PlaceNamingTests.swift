@@ -54,6 +54,17 @@ struct PlaceNamingTests {
         #expect(try GeoapifyReverseGeocoder.label(from: response("{\"results\":[]}"), at: now) == nil)
     }
 
+    @Test("Nothing above the city tier is a place a day can be labelled with")
+    func stateAndCountryAreNotLabels() throws {
+        let payload = try response("""
+        {"results":[{"state":"Illinois","country":"United States","distance":8400,
+        "formatted":"Illinois, United States"}]}
+        """)
+        // A day headed by its state or its country says nothing about where the person
+        // was, so the place phrase is omitted rather than widened until something fits.
+        #expect(GeoapifyReverseGeocoder.label(from: payload, at: now) == nil)
+    }
+
     @Test("A missing attribution falls back to the required OpenStreetMap credit")
     func attributionAlwaysPresent() throws {
         let payload = try response("""

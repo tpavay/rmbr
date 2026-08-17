@@ -13,12 +13,30 @@ import UIKit
 /// pressure, so a long scroll through a large library never accumulates a library's
 /// worth of bitmaps. Beyond that cache, the only strong reference to an image is the
 /// view currently drawing it.
+///
+/// One request is issued per image, however many views want it, and it is cancelled the
+/// moment the last of them goes away. The window around what is on screen is preheated
+/// through `PHCachingImageManager` rather than by issuing speculative requests of its
+/// own.
 @MainActor
 @Observable
 final class ThumbnailStore {
     private let manager = PHCachingImageManager()
     private let images = NSCache<NSString, UIImage>()
     private let assets = NSCache<NSString, PHAsset>()
+    private var inFlight: [String: Request] = [:]
+    private var preheated: [String: Preheat] = [:]
+
+    /// One PhotoKit request and everybody waiting on it.
+    private final class Request {
+        var requestID: PHImageRequestID?
+        var consumers: [UUID: AsyncStream<UIImage>.Continuation] = [:]
+    }
+
+    private struct Preheat {
+        let assets: [PHAsset]
+        let targetSize: CGSize
+    }
 
     init() {
         images.totalCostLimit = 48 * 1024 * 1024
@@ -34,41 +52,109 @@ final class ThumbnailStore {
     /// Every delivery PhotoKit makes for one request, the degraded pass first.
     ///
     /// The stream ends once the full-quality image has arrived or the request came back
-    /// with nothing. A caller that goes away before then ends its own iteration, which
-    /// stops any work that has not been handed to PhotoKit yet.
+    /// with nothing. A caller that goes away before then ends its own iteration, and the
+    /// underlying request is cancelled as soon as nobody is left waiting on it.
     func deliveries(
         for reference: MediaReference,
         targetSize: CGSize,
         allowNetwork: Bool = false
     ) -> AsyncStream<UIImage> {
-        AsyncStream { continuation in
+        let key = Self.key(reference.localIdentifier, targetSize)
+        let token = UUID()
+        return AsyncStream { continuation in
             let work = Task { @MainActor [weak self] in
-                await self?.deliver(
-                    reference,
+                await self?.begin(
+                    token: token,
+                    key: key,
+                    reference: reference,
                     targetSize: targetSize,
                     allowNetwork: allowNetwork,
-                    to: continuation
+                    continuation: continuation
                 )
             }
-            continuation.onTermination = { _ in work.cancel() }
+            continuation.onTermination = { [weak self] _ in
+                work.cancel()
+                Task { @MainActor [weak self] in
+                    self?.release(token: token, key: key)
+                }
+            }
         }
     }
 
-    private func deliver(
-        _ reference: MediaReference,
+    /// Preheats a window of captures and drops whatever left it.
+    ///
+    /// `window` names the surface asking - one Life scroll, one day page - so a screen
+    /// replaces its own preheated set without disturbing anybody else's.
+    func preheat(_ references: [MediaReference], targetSize: CGSize, window: String) {
+        let identifiers = references.map(\.localIdentifier)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let wanted = await self.assets(for: identifiers)
+            let previous = self.preheated[window]
+            if let previous {
+                let keep = Set(wanted.map(\.localIdentifier))
+                let dropped = previous.assets.filter { !keep.contains($0.localIdentifier) }
+                if !dropped.isEmpty {
+                    self.manager.stopCachingImages(
+                        for: dropped,
+                        targetSize: previous.targetSize,
+                        contentMode: .aspectFill,
+                        options: nil
+                    )
+                }
+            }
+            let held = Set(previous?.assets.map(\.localIdentifier) ?? [])
+            let added = wanted.filter { !held.contains($0.localIdentifier) }
+            if !added.isEmpty {
+                self.manager.startCachingImages(
+                    for: added,
+                    targetSize: targetSize,
+                    contentMode: .aspectFill,
+                    options: nil
+                )
+            }
+            self.preheated[window] = Preheat(assets: wanted, targetSize: targetSize)
+        }
+    }
+
+    func stopPreheating(window: String) {
+        guard let preheat = preheated.removeValue(forKey: window) else { return }
+        manager.stopCachingImages(
+            for: preheat.assets,
+            targetSize: preheat.targetSize,
+            contentMode: .aspectFill,
+            options: nil
+        )
+    }
+
+    private func begin(
+        token: UUID,
+        key: String,
+        reference: MediaReference,
         targetSize: CGSize,
         allowNetwork: Bool,
-        to continuation: AsyncStream<UIImage>.Continuation
+        continuation: AsyncStream<UIImage>.Continuation
     ) async {
-        let key = Self.key(reference.localIdentifier, targetSize)
         if let cached = images.object(forKey: key as NSString) {
             continuation.yield(cached)
             continuation.finish()
             return
         }
 
-        guard let asset = await asset(for: reference.localIdentifier), !Task.isCancelled else {
-            continuation.finish()
+        if let existing = inFlight[key] {
+            existing.consumers[token] = continuation
+            return
+        }
+
+        let request = Request()
+        request.consumers[token] = continuation
+        inFlight[key] = request
+
+        let asset = await asset(for: reference.localIdentifier)
+        // Everybody may have scrolled away while the identifier was being resolved.
+        guard inFlight[key] === request else { return }
+        guard let asset else {
+            finish(key)
             return
         }
 
@@ -77,24 +163,45 @@ final class ThumbnailStore {
         options.resizeMode = .fast
         options.isNetworkAccessAllowed = allowNetwork
 
-        manager.requestImage(
+        let requestID = manager.requestImage(
             for: asset,
             targetSize: targetSize,
             contentMode: .aspectFill,
             options: options
         ) { [weak self] image, info in
             MainActor.assumeIsolated {
-                guard let image else {
-                    continuation.finish()
-                    return
-                }
-                continuation.yield(image)
-                let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                guard !isDegraded else { return }
-                self?.images.setObject(image, forKey: key as NSString, cost: Self.cost(of: image))
-                continuation.finish()
+                self?.deliver(image, info: info, forKey: key)
             }
         }
+        // A fast delivery can land before `requestImage` returns, in which case this
+        // request is already finished and the identifier belongs to nothing.
+        if inFlight[key] === request { request.requestID = requestID }
+    }
+
+    private func deliver(_ image: UIImage?, info: [AnyHashable: Any]?, forKey key: String) {
+        guard let request = inFlight[key] else { return }
+        guard let image else {
+            finish(key)
+            return
+        }
+        for continuation in request.consumers.values { continuation.yield(image) }
+        let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+        guard !isDegraded else { return }
+        images.setObject(image, forKey: key as NSString, cost: Self.cost(of: image))
+        finish(key)
+    }
+
+    private func finish(_ key: String) {
+        guard let request = inFlight.removeValue(forKey: key) else { return }
+        for continuation in request.consumers.values { continuation.finish() }
+    }
+
+    private func release(token: UUID, key: String) {
+        guard let request = inFlight[key] else { return }
+        request.consumers.removeValue(forKey: token)
+        guard request.consumers.isEmpty else { return }
+        inFlight.removeValue(forKey: key)
+        if let requestID = request.requestID { manager.cancelImageRequest(requestID) }
     }
 
     /// Resolves an identifier away from the main actor.
@@ -104,15 +211,35 @@ final class ThumbnailStore {
     /// failed to resolve once is asked for again the next time it appears rather than
     /// being pinned to a placeholder for the rest of the session.
     private func asset(for localIdentifier: String) async -> PHAsset? {
-        let key = localIdentifier as NSString
-        if let asset = assets.object(forKey: key) { return asset }
-        let resolved = await Task.detached(priority: .userInitiated) { () -> PHAsset? in
-            let result = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
-            return result.count > 0 ? result.object(at: 0) : nil
-        }.value
-        guard let resolved else { return nil }
-        assets.setObject(resolved, forKey: key)
-        return resolved
+        if let asset = assets.object(forKey: localIdentifier as NSString) { return asset }
+        return await self.assets(for: [localIdentifier]).first
+    }
+
+    private func assets(for localIdentifiers: [String]) async -> [PHAsset] {
+        var resolved: [String: PHAsset] = [:]
+        var missing: [String] = []
+        for identifier in localIdentifiers {
+            if let asset = assets.object(forKey: identifier as NSString) {
+                resolved[identifier] = asset
+            } else if !missing.contains(identifier) {
+                missing.append(identifier)
+            }
+        }
+
+        if !missing.isEmpty {
+            let fetched = await Task.detached(priority: .userInitiated) { () -> [PHAsset] in
+                let result = PHAsset.fetchAssets(withLocalIdentifiers: missing, options: nil)
+                var assets: [PHAsset] = []
+                result.enumerateObjects { asset, _, _ in assets.append(asset) }
+                return assets
+            }.value
+            for asset in fetched {
+                assets.setObject(asset, forKey: asset.localIdentifier as NSString)
+                resolved[asset.localIdentifier] = asset
+            }
+        }
+
+        return localIdentifiers.compactMap { resolved[$0] }
     }
 
     private static func cost(of image: UIImage) -> Int {

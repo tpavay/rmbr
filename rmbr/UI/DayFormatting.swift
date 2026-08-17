@@ -140,6 +140,37 @@ enum DayFormatting {
         return parts.joined(separator: " · ") + " kept out of memories"
     }
 
+    /// What a moment holds, for a moment the display budget showed nothing of.
+    ///
+    /// The budget is capped at ten captures for the whole day, so a day with many
+    /// moments leaves later ones with no thumbnail at all. Such a moment states what it
+    /// contains rather than offering "more" than nothing (RE-020).
+    static func mediaComposition(of references: [MediaReference]) -> String? {
+        let photographs = references.filter { $0.kind != .video }.count
+        let videos = references.filter { $0.kind == .video }.count
+        var parts: [String] = []
+        if photographs > 0 {
+            parts.append(count(photographs, singular: "photograph", plural: "photographs"))
+        }
+        if videos > 0 {
+            parts.append(count(videos, singular: "video", plural: "videos"))
+        }
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: " and ")
+    }
+
+    /// What a row says when no key fact could be stated.
+    ///
+    /// Limited access leaves the raw counts unknown, so a day can carry a cover and
+    /// moments while having no fact to print. That day states what rmbr can see rather
+    /// than reading as empty with the person's own photographs beside it; only a day
+    /// that genuinely holds nothing says so (RQ-053).
+    static func rowFallback(for day: Day) -> String {
+        let visible = day.media.eligibleMediaIDs.count
+        guard visible > 0 else { return "Nothing recorded" }
+        return "\(count(visible, singular: "capture", plural: "captures")) rmbr can see"
+    }
+
     /// Up to three key facts, taken by the fixed category order.
     ///
     /// Milestone 1 can supply the named place and the capture summary. The workout,
@@ -160,5 +191,40 @@ enum DayFormatting {
             facts.append(summary)
         }
         return Array(facts.prefix(3))
+    }
+}
+
+/// What a row can say about a day nobody has opened.
+///
+/// Built from the archive survey's metadata signals and the stored ledger, never from a
+/// composition, so listing a month costs nothing that opening a day costs. Counts are
+/// counts of what rmbr can see, and say so whenever access is not exhaustive (RQ-053).
+struct DayRowSummary: Sendable, Hashable {
+    let placeName: String?
+    let attribution: String?
+    let visibleMediaCount: Int
+    let placeCount: Int
+    let hasExhaustiveCounts: Bool
+
+    var headline: String {
+        if let placeName { return placeName }
+        if visibleMediaCount > 0 { return captureCount }
+        return hasExhaustiveCounts ? "Nothing recorded" : "Nothing rmbr can see here"
+    }
+
+    var detail: String? {
+        var parts: [String] = []
+        if placeName != nil, visibleMediaCount > 0 { parts.append(captureCount) }
+        if placeCount > 1 {
+            parts.append(DayFormatting.count(placeCount, singular: "place", plural: "places"))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    var isEmpty: Bool { placeName == nil && visibleMediaCount == 0 }
+
+    private var captureCount: String {
+        let counted = DayFormatting.count(visibleMediaCount, singular: "capture", plural: "captures")
+        return hasExhaustiveCounts ? counted : "\(counted) rmbr can see"
     }
 }
