@@ -24,7 +24,8 @@ xcodebuild -project rmbr.xcodeproj -scheme rmbr -configuration Debug \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test
 ```
 
-`DEVELOPMENT_TEAM` is intentionally empty, so a device build needs a team selected in Xcode once.
+`DEVELOPMENT_TEAM` is committed as `QWGVB7TN4T`, applied through the `[sdk=iphoneos*]` conditional so device builds sign automatically while simulator builds stay unsigned.
+A Team ID ships inside every built bundle and signs nothing without the private key, so it is configuration rather than a secret.
 Verify a device compile without signing using `-destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO`.
 
 Swift 6 language mode is on. Keep it on.

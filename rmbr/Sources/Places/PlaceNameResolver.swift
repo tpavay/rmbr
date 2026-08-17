@@ -12,6 +12,9 @@ struct PlaceResolutionReport: Sendable, Hashable {
     /// only in memory is not yet the permanent record the ledger promises to be, and
     /// saying so is what stops a day quietly losing its name at the next launch.
     var labelsPersisted: Bool = true
+    /// The person left the day before the provider finished. Nothing further is asked
+    /// for, and no caller should treat this as a completed pass.
+    var wasCancelled: Bool = false
     /// Never the provider's own error. The request URL carries the API key and the
     /// coordinate, and a URL-loading error quotes that URL, so only a sanitised code
     /// reaches this field.
@@ -56,7 +59,11 @@ actor PlaceNameResolver {
         self.session = session
         self.dailyRequestBudget = dailyRequestBudget
         self.minimumRequestInterval = minimumRequestInterval
-        self.ledger = store.load()
+        var loaded = store.load()
+        // Labels named under a superseded cascade are dropped here, and the pruned ledger
+        // is owed to disk so the same migration does not run on every launch.
+        self.hasUnsavedChanges = loaded.adoptCurrentNamingPolicy()
+        self.ledger = loaded
     }
 
     var currentLedger: PlaceLabelLedger { ledger }
@@ -99,12 +106,20 @@ actor PlaceNameResolver {
         var spent = RequestBudget.spentToday()
 
         for coordinate in pending {
-            if Task.isCancelled { break }
+            if Task.isCancelled {
+                report.wasCancelled = true
+                break
+            }
             guard spent < dailyRequestBudget else {
                 report.skippedForBudget += 1
                 continue
             }
-            await throttle()
+            // The budget is spent only once the wait has completed, so a pass abandoned
+            // while waiting costs the person nothing.
+            guard await throttle() else {
+                report.wasCancelled = true
+                break
+            }
             report.requested += 1
             spent += 1
             RequestBudget.recordSpend()
@@ -118,6 +133,9 @@ actor PlaceNameResolver {
                     hasUnsavedChanges = true
                     report.unlabelled += 1
                 }
+            } catch where Self.isCancellation(error) {
+                report.wasCancelled = true
+                break
             } catch {
                 // A failure leaves the coordinate unanswered rather than recording a
                 // wrong or empty label, so a later run can try again (RQ-052).
@@ -164,6 +182,15 @@ actor PlaceNameResolver {
     ///
     /// `URLError` carries the failing URL, which holds the API key and the coordinate
     /// that was looked up, and the report is rendered on screen.
+    /// Whether a failure is the person having walked away rather than the provider
+    /// answering badly. `URLSession` reports a cancelled task as a `URLError`, not as a
+    /// `CancellationError`, so both shapes count.
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        return false
+    }
+
     private static func sanitised(_ error: Error) -> String {
         switch error {
         case let failure as GeoapifyReverseGeocoder.Failure:
@@ -181,16 +208,22 @@ actor PlaceNameResolver {
         }
     }
 
-    private func throttle() async {
+    /// Waits out the minimum interval, answering whether the wait completed.
+    private func throttle() async -> Bool {
         guard let last = lastRequestAt else {
             lastRequestAt = Date()
-            return
+            return !Task.isCancelled
         }
         let elapsed = Date().timeIntervalSince(last)
         if elapsed < minimumRequestInterval {
-            try? await Task.sleep(for: .seconds(minimumRequestInterval - elapsed))
+            do {
+                try await Task.sleep(for: .seconds(minimumRequestInterval - elapsed))
+            } catch {
+                return false
+            }
         }
         lastRequestAt = Date()
+        return !Task.isCancelled
     }
 }
 

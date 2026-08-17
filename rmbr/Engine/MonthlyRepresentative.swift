@@ -17,10 +17,10 @@ struct DaySignals: Sendable, Hashable {
     /// exclude screenshots; the factual summary of what the day contained never does, so
     /// a day of twenty-one screenshots is not a day that held nothing (RE-012, RQ-053).
     var rawCounts: RawCaptureCounts = RawCaptureCounts()
-    /// The anchor a composed day would name first: the one belonging to the earliest
-    /// moment that has a place. Carried so a month row and the opened day cannot name two
-    /// different places for the same day.
-    var headlineAnchorCentroid: Coordinate?
+    /// The day's anchors in the order its moments occur. A month row names the first of
+    /// these the ledger can supply a label for, which is exactly what the opened day
+    /// prints first, so the two can never disagree about where the day was.
+    var chronologicalAnchorCentroids: [Coordinate] = []
 
     var distinctPlaceCount: Int { placeAnchorCentroids.count }
 }

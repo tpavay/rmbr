@@ -115,7 +115,7 @@ struct DayPageView: View {
             if facts.isEmpty && day.moments.isEmpty {
                 // The only sentence rmbr ever prints about an empty day. It says what
                 // rmbr has, not what the person did (RQ-043).
-                Text("rmbr has nothing recorded for this day.")
+                Text(DayFormatting.emptyDayStatement(for: day))
                     .font(.utility(15))
                     .foregroundStyle(Palette.dustyZinc)
             } else {

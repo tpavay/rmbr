@@ -70,12 +70,11 @@ enum ArchiveSurveyor {
                 survey.places.insert(centroid, on: date)
             }
 
-            // Moments arrive in chronological order, so the first one carrying an anchor
-            // is the place the composed day prints first.
-            let headline = moments
+            // Moments arrive in chronological order, so this is the order in which the
+            // composed day considers its places.
+            let chronological = moments
                 .compactMap(\.anchorID)
-                .first
-                .flatMap { places.anchors[$0]?.centroid }
+                .compactMap { places.anchors[$0]?.centroid }
 
             survey.signalsByDate[date] = DaySignals(
                 date: date,
@@ -85,7 +84,7 @@ enum ArchiveSurveyor {
                 momentsWithMediaCount: moments.filter { !$0.captures.isEmpty }.count,
                 placeAnchorCentroids: centroids,
                 rawCounts: rawCounts,
-                headlineAnchorCentroid: headline
+                chronologicalAnchorCentroids: chronological
             )
         }
 

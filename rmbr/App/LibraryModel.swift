@@ -181,6 +181,10 @@ final class LibraryModel {
             if changed { forgetLibrary() }
             phase = .permissionRefused(current)
         case .full, .limited:
+            // Full to limited narrows what may be shown, and limited to full changes what
+            // every count means. Neither may keep serving the old index and the pixels
+            // decoded from it while the replacement is being built.
+            if changed { forgetLibrary() }
             await loadOrBuildIndex()
         }
     }
@@ -269,6 +273,11 @@ final class LibraryModel {
             }
         }
 
+        // Reaching here means no cached snapshot describes what rmbr may currently see -
+        // the grant narrowed, the selection changed, or the library moved. Whatever was
+        // built from the old one stops being served now, not when the rebuild lands.
+        if index != nil { forgetLibrary() }
+
         loadedFromCache = false
         phase = .indexing(done: 0, total: 0)
 
@@ -282,12 +291,28 @@ final class LibraryModel {
 
         let wantsExhaustive = access.isExhaustive
         do {
-            let (output, signature) = try await Task.detached(priority: .userInitiated) {
-                (
-                    try indexer.buildIndex(progress: progress),
-                    PhotoLibraryIndexer.librarySignature(coversWholeLibrary: wantsExhaustive)
+            // The walk and the signature are separate PhotoKit reads, so the selection
+            // could move between them and leave records described by a fingerprint they
+            // do not belong to. Bracketing the walk is what makes the pair consistent.
+            let walked = try await Task.detached(priority: .userInitiated) {
+                () -> (PhotoLibraryIndexer.Output, LibrarySignature)? in
+                let before = PhotoLibraryIndexer.librarySignature(
+                    coversWholeLibrary: wantsExhaustive
                 )
+                let output = try indexer.buildIndex(progress: progress)
+                let after = PhotoLibraryIndexer.librarySignature(
+                    coversWholeLibrary: wantsExhaustive
+                )
+                guard before == after else { return nil }
+                return (output, after)
             }.value
+
+            guard let (output, signature) = walked else {
+                // The library changed under the walk. Nothing from it is published, and
+                // the queued pass indexes what the grant covers now.
+                refreshPending = true
+                return
+            }
             let built = CaptureIndex(records: output.records, timeZone: timeZone)
             index = built
             metrics = output.metrics
@@ -382,17 +407,19 @@ final class LibraryModel {
             return
         }
 
-        cache.clearSchedule()
         let composer = composer
-        let cache = cache
         let placeLabels = ledger.lookup
         let hasFullAccess = access.isExhaustive
         let timeZone = index.timeZone
         let generation = libraryGeneration
 
-        let outcome = await Task.detached(priority: .userInitiated) { () -> (Double, [String]) in
+        // Composed away from the shared cache, so a pass overtaken by a rebuild cannot
+        // put records the new grant may not cover in front of anybody.
+        let outcome = await Task.detached(priority: .userInitiated) { () -> ([Day], Double, [String]) in
             let started = Date()
+            var days: [Day] = []
             var attributions: [String] = []
+            var credits: Set<String> = []
             for date in dates {
                 let result = composer.compose(
                     date: date,
@@ -404,23 +431,24 @@ final class LibraryModel {
                         composedAt: Date()
                     )
                 )
-                cache.store(result.day, scheduled: true)
-                for line in result.day.placeAttributions where !attributions.contains(line) {
+                days.append(result.day)
+                for line in result.day.placeAttributions
+                where credits.insert(ResolvedPlaceLabel.creditKey(line)).inserted {
                     attributions.append(line)
                 }
             }
-            return (Date().timeIntervalSince(started), attributions)
+            return (days, Date().timeIntervalSince(started), attributions)
         }.value
 
         // The library moved while this pass ran, so what it composed describes records
-        // rmbr may no longer be allowed to show. It is dropped rather than published.
-        guard libraryGeneration == generation else {
-            cache.invalidateAll()
-            return
-        }
+        // rmbr may no longer be allowed to show. It is dropped without ever being stored.
+        guard libraryGeneration == generation else { return }
+
+        cache.clearSchedule()
+        for day in outcome.0 { cache.store(day, scheduled: true) }
         composedDayCount = dates.count
-        composeSeconds = outcome.0
-        placeAttributions = outcome.1
+        composeSeconds = outcome.1
+        placeAttributions = outcome.2
     }
 
     /// Prints what the run cost, so a device run produces a number without a screenshot.
@@ -489,7 +517,11 @@ final class LibraryModel {
         let signals = signalsByDate[date]
         // The same anchor the composed day would print first, so a month row and the day
         // it opens can never name two different places.
-        let label = signals?.headlineAnchorCentroid.flatMap { ledger.label(near: $0) }
+        let lookup = ledger
+        let label = signals?.chronologicalAnchorCentroids
+            .lazy
+            .compactMap { lookup.label(near: $0) }
+            .first
         return DayRowSummary(
             placeName: label?.text,
             attributions: label?.attributions ?? [],
@@ -529,25 +561,27 @@ final class LibraryModel {
 
         let generation = libraryGeneration
         let (updated, report) = await resolver.resolve(result.pendingPlaceLookups)
-        // The library may have been rebuilt or narrowed while the provider was answering.
-        // Recomposing from the index this call started with would put records back that
-        // the new grant may not cover, so the labels are kept and nothing else is.
-        guard libraryGeneration == generation, let current = self.index else {
-            ledger = updated
-            ledgerLabelCount = updated.resolvedCount
-            placeReport = report
-            return
-        }
         ledger = updated
         ledgerLabelCount = updated.resolvedCount
         placeReport = report
+
+        // Two reasons to stop with the labels and nothing else. The library may have been
+        // rebuilt or narrowed while the provider was answering, in which case recomposing
+        // from the index this call started with would put back records the new grant may
+        // not cover. Or the person left the day, in which case a full recomposition is
+        // work nobody is waiting for.
+        guard !report.wasCancelled, !Task.isCancelled else { return }
+        guard libraryGeneration == generation, let current = self.index else { return }
+
         // Every composed day may now carry a label it did not have, so the composed
         // window is rebuilt rather than left to recompose a row at a time while it is
         // being laid out.
         cache.invalidateAll()
         await composeBackfill(index: current)
         guard libraryGeneration == generation else { return }
-        for line in day(for: date).placeAttributions where !placeAttributions.contains(line) {
+        var credits = Set(placeAttributions.map(ResolvedPlaceLabel.creditKey))
+        for line in day(for: date).placeAttributions
+        where credits.insert(ResolvedPlaceLabel.creditKey(line)).inserted {
             placeAttributions.append(line)
         }
     }

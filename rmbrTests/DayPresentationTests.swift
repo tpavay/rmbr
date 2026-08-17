@@ -127,6 +127,50 @@ struct DayPresentationTests {
         #expect(DayFormatting.rowFallback(for: day([])) == "Nothing recorded")
     }
 
+    @Test("A day whose captures were all filtered out never claims to be empty")
+    func filteredDayDoesNotReadAsEmpty() {
+        let captures = [
+            Fixture.capture("09:05:00", on: date, in: Fixture.chicago, isScreenshot: true)
+        ]
+        let limited = composer.compose(
+            date: date,
+            captures: captures,
+            context: Fixture.context(fullAccess: false)
+        ).day
+        #expect(DayFormatting.keyFacts(for: limited).isEmpty)
+        #expect(DayFormatting.rowFallback(for: limited) == "1 capture kept out of memories")
+        #expect(
+            DayFormatting.emptyDayStatement(for: limited)
+                == "1 capture from this day is kept out of memories."
+        )
+        #expect(
+            DayFormatting.emptyDayStatement(for: day([]))
+                == "rmbr has nothing recorded for this day."
+        )
+    }
+
+    @Test("A place count drawn from part of a library says so")
+    func limitedPlaceCountIsQualified() {
+        let elsewhere = Coordinate(latitude: 41.9000, longitude: -87.6200)
+        let captures = [
+            Fixture.capture("09:00:00", on: date, in: Fixture.chicago, coordinate: coordinate),
+            Fixture.capture("14:00:00", on: date, in: Fixture.chicago, coordinate: elsewhere)
+        ]
+        let limited = composer.compose(
+            date: date,
+            captures: captures,
+            context: Fixture.context(fullAccess: false, labels: Fixture.namingEverything("Home"))
+        ).day
+        #expect(DayFormatting.keyFacts(for: limited).contains("2 places rmbr can see"))
+
+        let full = composer.compose(
+            date: date,
+            captures: captures,
+            context: Fixture.context(labels: Fixture.namingEverything("Home"))
+        ).day
+        #expect(DayFormatting.keyFacts(for: full).contains("2 places"))
+    }
+
     @Test("A moment the budget showed nothing of states what it holds")
     func unshownMomentStatesItsContents() {
         let references = [

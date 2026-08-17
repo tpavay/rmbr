@@ -72,11 +72,15 @@ enum Fixture {
         )
     }
 
-    static func label(_ text: String, specificity: PlaceSpecificity = .venue) -> ResolvedPlaceLabel {
+    static func label(
+        _ text: String,
+        specificity: PlaceSpecificity = .venue,
+        origin: PlaceLabelOrigin = .providerPOI
+    ) -> ResolvedPlaceLabel {
         ResolvedPlaceLabel(
             text: text,
             specificity: specificity,
-            origin: .providerPOI,
+            origin: origin,
             confidence: nil,
             provider: "geoapify",
             attribution: OpenStreetMap.attribution,

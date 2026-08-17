@@ -164,15 +164,24 @@ struct Day: Sendable, Codable, Hashable, Identifiable {
     /// data is reused, so the requirement travels with the day rather than depending
     /// on a screen remembering to add it.
     var placeAttributions: [String] {
-        var seen: [String] = []
+        var lines: [String] = []
+        var keys: Set<String> = []
         for moment in moments {
             guard let label = moment.place?.label.knownValue else { continue }
-            for line in label.attributions where !seen.contains(line) { seen.append(line) }
+            for line in label.attributions where keys.insert(ResolvedPlaceLabel.creditKey(line)).inserted {
+                lines.append(line)
+            }
         }
-        return seen
+        return lines
     }
 
     var hasAnyContent: Bool {
         !moments.isEmpty || !media.eligibleMediaIDs.isEmpty
     }
+
+    /// Whether this day's figures describe the library or only the part rmbr was shown.
+    ///
+    /// Limited access leaves the raw counts unknown by construction, so this is the one
+    /// signal presentation needs to decide whether a figure may be stated flatly.
+    var hasExhaustiveCounts: Bool { media.rawCounts.knownValue != nil }
 }

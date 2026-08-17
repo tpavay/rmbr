@@ -136,8 +136,23 @@ struct ResolvedPlaceLabel: Sendable, Codable, Hashable {
     /// Every line that must appear wherever this label is shown, in display order.
     var attributions: [String] {
         var lines = [serviceAttribution]
-        if !attribution.isEmpty, attribution != serviceAttribution { lines.append(attribution) }
+        if !attribution.isEmpty, Self.creditKey(attribution) != Self.creditKey(serviceAttribution) {
+            lines.append(attribution)
+        }
         return lines
+    }
+
+    /// What makes two credits the same credit.
+    ///
+    /// The service credit carries a copyright symbol and the provider's OpenStreetMap
+    /// results do not, so comparing the raw strings would print the same obligation
+    /// twice on an ordinary label.
+    static func creditKey(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "©", with: "")
+            .replacingOccurrences(of: "(c)", with: "", options: .caseInsensitive)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
     }
 
     init(

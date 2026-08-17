@@ -13,6 +13,13 @@ struct PlaceLabelLedger: Sendable, Codable {
     /// Two coordinates this close are treated as the same physical anchor, matching the
     /// hard-merge distance used when clustering a day's fixes.
     static let matchDistanceMetres: Double = 25.0
+    /// Which naming cascade produced the stored provider labels.
+    ///
+    /// Version 2 is the cascade that refuses building and street-address matches. The
+    /// ledger being permanent is what makes this necessary: a label recorded under an
+    /// earlier cascade would otherwise be shown forever, because a coordinate that
+    /// already has an answer is never asked about again.
+    static let namingPolicyVersion = 2
     private static let cellDegrees = 0.001
 
     enum Outcome: Sendable, Codable, Hashable {
@@ -28,8 +35,41 @@ struct PlaceLabelLedger: Sendable, Codable {
     }
 
     private(set) var entries: [String: [Entry]] = [:]
+    private(set) var policyVersion: Int
 
-    init() {}
+    init() { policyVersion = Self.namingPolicyVersion }
+
+    enum CodingKeys: String, CodingKey {
+        case entries, policyVersion
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        entries = try container.decode([String: [Entry]].self, forKey: .entries)
+        // A ledger written before the cascade was versioned is version 1 by definition.
+        policyVersion = try container.decodeIfPresent(Int.self, forKey: .policyVersion) ?? 1
+    }
+
+    /// Drops provider labels made under a superseded naming cascade.
+    ///
+    /// A person's own correction is their content and survives untouched, as does a
+    /// coordinate the provider answered with no label at all - the new cascade is
+    /// stricter, so that answer still holds. Everything the provider named is discarded
+    /// and asked again, which is the only way the new rules reach labels already stored.
+    mutating func adoptCurrentNamingPolicy() -> Bool {
+        guard policyVersion < Self.namingPolicyVersion else { return false }
+        for (key, list) in entries {
+            let kept = list.filter { entry in
+                switch entry.outcome {
+                case .resolved(let label): label.origin == .personCorrection
+                case .unlabelled: true
+                }
+            }
+            entries[key] = kept.isEmpty ? nil : kept
+        }
+        policyVersion = Self.namingPolicyVersion
+        return true
+    }
 
     var count: Int { entries.values.reduce(0) { $0 + $1.count } }
 

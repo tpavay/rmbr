@@ -51,14 +51,34 @@ struct MonthView: View {
     }
 
     /// One reason code, expressed as a sentence, never a score.
+    ///
+    /// The signals count videos as readily as photographs, so the wording stays neutral
+    /// about what a day held. Under limited access the cascade only ever compared the
+    /// days rmbr was shown, so a comparison says so rather than stating a fact about the
+    /// whole archive.
     private func reasonText(_ reason: RepresentativeReason) -> String {
+        let sawEverything = model.access.isExhaustive
         switch reason {
-        case .favoriteMedia: "This month is here because you favourited a photograph that day."
-        case .archiveUniquePlace: "This month is here because that day is the only one at that place."
-        case .greatestDistinctPlaceCount: "This month is here because that day has the most places."
-        case .greatestMomentCount: "This month is here because that day has the most moments."
-        case .greatestEligibleMediaCount: "This month is here because that day has the most photographs."
-        case .nearestMonthMidpoint: "This month is here because that day sits nearest its middle."
+        case .favoriteMedia:
+            return "This month is here because you favourited something that day."
+        case .archiveUniquePlace:
+            return sawEverything
+                ? "This month is here because that day is the only one at that place."
+                : "This month is here because it is the only day rmbr can see at that place."
+        case .greatestDistinctPlaceCount:
+            return sawEverything
+                ? "This month is here because that day has the most places."
+                : "This month is here because that day has the most places rmbr can see."
+        case .greatestMomentCount:
+            return sawEverything
+                ? "This month is here because that day has the most moments."
+                : "This month is here because that day has the most moments rmbr can see."
+        case .greatestEligibleMediaCount:
+            return sawEverything
+                ? "This month is here because that day has the most captures."
+                : "This month is here because that day has the most captures rmbr can see."
+        case .nearestMonthMidpoint:
+            return "This month is here because that day sits nearest its middle."
         }
     }
 }

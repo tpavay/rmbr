@@ -29,6 +29,7 @@ final class ThumbnailStore {
     private var preheatWork: [String: Task<Void, Never>] = [:]
 
     /// One PhotoKit request and everybody waiting on it.
+    @MainActor
     private final class Request {
         var requestID: PHImageRequestID?
         var consumers: [UUID: AsyncStream<UIImage>.Continuation] = [:]
@@ -195,7 +196,7 @@ final class ThumbnailStore {
             options: options
         ) { [weak self] image, info in
             MainActor.assumeIsolated {
-                self?.deliver(image, info: info, forKey: key)
+                self?.deliver(image, info: info, forKey: key, from: request)
             }
         }
         // A fast delivery can land before `requestImage` returns, in which case this
@@ -203,8 +204,15 @@ final class ThumbnailStore {
         if inFlight[key] === request { request.requestID = requestID }
     }
 
-    private func deliver(_ image: UIImage?, info: [AnyHashable: Any]?, forKey key: String) {
-        guard let request = inFlight[key] else { return }
+    private func deliver(
+        _ image: UIImage?,
+        info: [AnyHashable: Any]?,
+        forKey key: String,
+        from request: Request
+    ) {
+        // A cancelled request can still deliver late, by which time the key may belong to
+        // a request somebody else is waiting on. Only the request that asked may answer.
+        guard inFlight[key] === request else { return }
         guard let image else {
             finish(key)
             return

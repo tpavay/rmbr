@@ -167,8 +167,33 @@ enum DayFormatting {
     /// that genuinely holds nothing says so (RQ-053).
     static func rowFallback(for day: Day) -> String {
         let visible = day.media.eligibleMediaIDs.count
-        guard visible > 0 else { return "Nothing recorded" }
-        return "\(count(visible, singular: "capture", plural: "captures")) rmbr can see"
+        if visible > 0 {
+            return "\(count(visible, singular: "capture", plural: "captures")) rmbr can see"
+        }
+        // A day whose only captures were filtered out of display still held them, and
+        // saying nothing was recorded would be a claim about the day rather than about
+        // what rmbr shows of it.
+        let excluded = day.media.exclusionCounts.total
+        if excluded > 0 {
+            return "\(count(excluded, singular: "capture", plural: "captures")) kept out of memories"
+        }
+        return day.hasExhaustiveCounts ? "Nothing recorded" : "Nothing rmbr can see here"
+    }
+
+    /// The only sentence rmbr prints about a day it can show nothing of.
+    ///
+    /// It says what rmbr has, never what the person did, and it does not claim the day
+    /// was empty when the day held captures that display rules kept out or that a
+    /// limited grant hid (RQ-043, RQ-053).
+    static func emptyDayStatement(for day: Day) -> String {
+        let excluded = day.media.exclusionCounts.total
+        if excluded > 0 {
+            let captures = count(excluded, singular: "capture", plural: "captures")
+            return "\(captures) from this day \(excluded == 1 ? "is" : "are") kept out of memories."
+        }
+        return day.hasExhaustiveCounts
+            ? "rmbr has nothing recorded for this day."
+            : "rmbr can see nothing from this day."
     }
 
     /// Up to three key facts, taken by the fixed category order.
@@ -184,7 +209,10 @@ enum DayFormatting {
             facts.append(place.text)
         }
         if let placeCount = day.facts.placeCount.knownValue, placeCount > 1 {
-            facts.append(count(placeCount, singular: "place", plural: "places"))
+            // Under limited access the places come from the subset rmbr was shown, so the
+            // count says what it counted rather than how many places the day held.
+            let places = count(placeCount, singular: "place", plural: "places")
+            facts.append(day.hasExhaustiveCounts ? places : "\(places) rmbr can see")
         }
         if facts.count < 3, let counts = day.media.rawCounts.knownValue,
            let summary = captureSummary(counts) {

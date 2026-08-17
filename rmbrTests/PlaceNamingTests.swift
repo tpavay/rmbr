@@ -107,6 +107,18 @@ struct PlaceNamingTests {
         #expect(label.attributions == [OpenStreetMap.attribution, "OpenAddresses contributors"])
     }
 
+    @Test("An OpenStreetMap result is credited once, not twice")
+    func openStreetMapCreditIsNotDuplicated() throws {
+        // The live API returns the credit without the copyright symbol the service credit
+        // carries, so raw string comparison would print the same obligation twice.
+        let payload = try response("""
+        {"results":[{"suburb":"West Loop","city":"Chicago",
+        "datasource":{"sourcename":"openstreetmap","attribution":"OpenStreetMap contributors"}}]}
+        """)
+        let label = try #require(GeoapifyReverseGeocoder.label(from: payload, at: now))
+        #expect(label.attributions == [OpenStreetMap.attribution])
+    }
+
     @Test("A ledger written before the service credit existed still reads back")
     func olderStoredLabelGainsTheServiceCredit() throws {
         let stored = """
@@ -147,6 +159,46 @@ struct PlaceLabelLedgerTests {
         #expect(ledger.needsLookup(origin) == false)
         #expect(ledger.label(near: origin) == nil)
         #expect(ledger.resolvedCount == 0)
+    }
+
+    @Test("A label named under a superseded cascade is asked again; a person's own is kept")
+    func supersededProviderLabelsAreReResolved() throws {
+        let corrected = Fixture.offset(origin, metresNorth: 400)
+        let unnameable = Fixture.offset(origin, metresNorth: 800)
+        var current = PlaceLabelLedger()
+        current.record(.resolved(Fixture.label("1035 West Van Buren Street")), at: origin)
+        current.record(.resolved(Fixture.label("Home", origin: .personCorrection)), at: corrected)
+        current.record(.unlabelled(attemptedAt: Date()), at: unnameable)
+
+        // A ledger written before the cascade was versioned carries no version at all.
+        var raw = try #require(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any]
+        )
+        raw.removeValue(forKey: "policyVersion")
+        var legacy = try JSONDecoder().decode(
+            PlaceLabelLedger.self,
+            from: try JSONSerialization.data(withJSONObject: raw)
+        )
+
+        let migrated = legacy.adoptCurrentNamingPolicy()
+        #expect(migrated)
+        #expect(legacy.label(near: origin) == nil)
+        #expect(legacy.needsLookup(origin))
+        // The person's own label is their content, and an answered-but-unnameable
+        // coordinate stays answered: the new cascade is stricter, not looser.
+        #expect(legacy.label(near: corrected)?.text == "Home")
+        #expect(legacy.needsLookup(unnameable) == false)
+        let migratedAgain = legacy.adoptCurrentNamingPolicy()
+        #expect(migratedAgain == false)
+    }
+
+    @Test("A ledger written under the current cascade is left alone")
+    func currentLedgerIsNotMigrated() {
+        var ledger = PlaceLabelLedger()
+        ledger.record(.resolved(Fixture.label("Millennium Park")), at: origin)
+        let migrated = ledger.adoptCurrentNamingPolicy()
+        #expect(migrated == false)
+        #expect(ledger.label(near: origin)?.text == "Millennium Park")
     }
 
     @Test("The ledger survives a round trip to disk")
