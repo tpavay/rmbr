@@ -73,7 +73,7 @@ struct CaptureIndexSnapshot: Sendable, Codable {
     let builtAt: Date
     let engineVersion: String
     let index: CaptureIndex
-    let metrics: IndexRunMetrics
+    var metrics: IndexRunMetrics
     /// Access level in force when the walk ran. A snapshot built under limited access
     /// must not later be presented as exhaustive.
     let wasFullAccess: Bool
@@ -89,10 +89,14 @@ struct CaptureIndexSnapshot: Sendable, Codable {
 /// person authored.
 struct CaptureIndexStore: Sendable {
     let fileURL: URL
+    /// What writing the snapshot cost, kept beside the snapshot rather than inside it: a
+    /// figure measured by writing a file cannot also be part of the file it measures.
+    let metricsURL: URL
 
     init(directory: URL? = nil) {
         let base = directory ?? Self.defaultDirectory()
         self.fileURL = base.appendingPathComponent("capture-index.plist")
+        self.metricsURL = base.appendingPathComponent("capture-index-metrics.plist")
     }
 
     static func defaultDirectory() -> URL {
@@ -109,20 +113,52 @@ struct CaptureIndexStore: Sendable {
 
     func load() -> CaptureIndexSnapshot? {
         guard let data = try? Data(contentsOf: fileURL) else { return nil }
-        guard let snapshot = try? PropertyListDecoder().decode(CaptureIndexSnapshot.self, from: data)
+        guard var snapshot = try? PropertyListDecoder().decode(CaptureIndexSnapshot.self, from: data)
         else { return nil }
         guard snapshot.engineVersion == ReconstructionVersion.engine else { return nil }
+        // The measured cost of the write is only adopted for the snapshot it describes.
+        if let record = loadMetrics(), record.builtAt == snapshot.builtAt {
+            snapshot.metrics = record.metrics
+        }
         return snapshot
     }
 
-    func save(_ snapshot: CaptureIndexSnapshot) throws {
+    /// Writes the snapshot and answers what writing it cost.
+    ///
+    /// The returned figure is the persist time a run reports, and the same figure is
+    /// recorded beside the snapshot so a later warm launch describes the run that built
+    /// the index with the time it actually took.
+    @discardableResult
+    func save(_ snapshot: CaptureIndexSnapshot) throws -> Double {
+        let started = Date()
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
         let data = try encoder.encode(snapshot)
         try data.write(to: fileURL, options: .atomic)
+        let elapsed = Date().timeIntervalSince(started)
+
+        var measured = snapshot.metrics
+        measured.persistSeconds = elapsed
+        let record = CaptureIndexMetricsRecord(builtAt: snapshot.builtAt, metrics: measured)
+        if let recordData = try? encoder.encode(record) {
+            try? recordData.write(to: metricsURL, options: .atomic)
+        }
+        return elapsed
     }
 
     func clear() {
         try? FileManager.default.removeItem(at: fileURL)
+        try? FileManager.default.removeItem(at: metricsURL)
     }
+
+    private func loadMetrics() -> CaptureIndexMetricsRecord? {
+        guard let data = try? Data(contentsOf: metricsURL) else { return nil }
+        return try? PropertyListDecoder().decode(CaptureIndexMetricsRecord.self, from: data)
+    }
+}
+
+/// The completed cost of one index build, written after the snapshot it belongs to.
+struct CaptureIndexMetricsRecord: Sendable, Codable {
+    let builtAt: Date
+    let metrics: IndexRunMetrics
 }

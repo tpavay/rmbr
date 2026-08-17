@@ -6,17 +6,47 @@ import Foundation
 /// values. There is no generated sentence, no interpretation and no adjective about the
 /// day (RQ-002, RE-004).
 enum DayFormatting {
+    /// Local components are turned into a date and back into a string entirely inside one
+    /// fixed zone, so what is printed depends on the components alone and never on where
+    /// the phone happens to be. Building these is expensive enough that a scrolling row
+    /// must not do it per frame.
+    private static let componentCalendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = fixedZone
+        return calendar
+    }()
+
+    private static let fixedZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+
+    private static let headingFormatter = formatter(dateFormat: "EEEE d MMMM yyyy")
+
+    private static let monthFormatter = formatter(dateFormat: "MMMM yyyy")
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        formatter.timeZone = fixedZone
+        return formatter
+    }()
+
+    private static func formatter(dateFormat: String) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateFormat = dateFormat
+        formatter.timeZone = fixedZone
+        return formatter
+    }
+
     static func heading(for date: LocalDate, today: LocalDate) -> String {
         if date == today { return "Today" }
         var components = DateComponents()
         components.year = date.year
         components.month = date.month
         components.day = date.day
-        let calendar = Calendar(identifier: .gregorian)
-        guard let resolved = calendar.date(from: components) else { return date.description }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "EEEE d MMMM yyyy"
-        return formatter.string(from: resolved)
+        guard let resolved = componentCalendar.date(from: components) else {
+            return date.description
+        }
+        return headingFormatter.string(from: resolved)
     }
 
     static func monthTitle(_ month: Month) -> String {
@@ -24,11 +54,10 @@ enum DayFormatting {
         components.year = month.year
         components.month = month.month
         components.day = 1
-        let calendar = Calendar(identifier: .gregorian)
-        guard let resolved = calendar.date(from: components) else { return month.description }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMMM yyyy"
-        return formatter.string(from: resolved)
+        guard let resolved = componentCalendar.date(from: components) else {
+            return month.description
+        }
+        return monthFormatter.string(from: resolved)
     }
 
     /// Prints a capture's own wall-clock time.
@@ -41,14 +70,10 @@ enum DayFormatting {
         let components = sourceTime.localComponents(defaultTimeZone: timeZone)
         let hour = components.hour ?? 0
         let minute = components.minute ?? 0
-        let calendar = Calendar(identifier: .gregorian)
-        guard let date = calendar.date(from: DateComponents(
+        guard let date = componentCalendar.date(from: DateComponents(
             year: 2000, month: 1, day: 1, hour: hour, minute: minute
         )) else { return String(format: "%02d:%02d", hour, minute) }
-        let formatter = DateFormatter()
-        formatter.timeStyle = .short
-        formatter.dateStyle = .none
-        return formatter.string(from: date)
+        return timeFormatter.string(from: date)
     }
 
     static func duration(_ interval: TimeInterval) -> String {

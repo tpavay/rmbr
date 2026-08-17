@@ -32,7 +32,7 @@ actor PlaceNameResolver {
     init(
         store: PlaceLabelLedgerStore = PlaceLabelLedgerStore(),
         credentials: GeoapifyCredentialStore = GeoapifyCredentialStore(),
-        session: URLSession = .shared,
+        session: URLSession = GeoapifyReverseGeocoder.privateSession,
         // Geoapify's free tier allows 3,000 credits a day. Staying under it keeps the
         // budget from being exhausted by a background pass before the person opens
         // anything.
@@ -130,19 +130,30 @@ actor PlaceNameResolver {
 
 /// A per-calendar-day count of provider requests, so a runaway pass cannot spend the
 /// whole free tier in one background sweep.
+/// One date and one count, rewritten when the date rolls over, so the record of what has
+/// been spent never grows with the number of days the app has been used.
 enum RequestBudget {
-    private static let prefix = "rmbr.geoapify.spend."
+    private static let dateKey = "rmbr.geoapify.spendDate"
+    private static let countKey = "rmbr.geoapify.spendCount"
 
-    private static var todayKey: String {
-        let now = LocalDate(instant: Date(), in: .current)
-        return prefix + now.description
+    private static var todayStamp: String {
+        LocalDate(instant: Date(), in: .current).description
     }
 
     static func spentToday() -> Int {
-        UserDefaults.standard.integer(forKey: todayKey)
+        spent(on: todayStamp, in: .standard)
     }
 
     static func recordSpend() {
-        UserDefaults.standard.set(spentToday() + 1, forKey: todayKey)
+        let defaults = UserDefaults.standard
+        let stamp = todayStamp
+        let spent = spent(on: stamp, in: defaults)
+        defaults.set(stamp, forKey: dateKey)
+        defaults.set(spent + 1, forKey: countKey)
+    }
+
+    private static func spent(on stamp: String, in defaults: UserDefaults) -> Int {
+        guard defaults.string(forKey: dateKey) == stamp else { return 0 }
+        return defaults.integer(forKey: countKey)
     }
 }

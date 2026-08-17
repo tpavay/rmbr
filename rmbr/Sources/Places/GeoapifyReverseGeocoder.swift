@@ -32,10 +32,22 @@ struct GeoapifyReverseGeocoder: Sendable {
         case decoding
     }
 
+    /// The key travels as a query item, so nothing about this exchange may touch the
+    /// disk: an ephemeral session keeps its cache, cookies and credentials in memory
+    /// alone, which leaves the keychain the only place the key is ever written. A URL
+    /// cache would buy nothing regardless - the ledger is permanent, so a coordinate is
+    /// asked about once for the life of the install.
+    static let privateSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }()
+
     let session: URLSession
     let apiKey: String
 
-    init(apiKey: String, session: URLSession = .shared) {
+    init(apiKey: String, session: URLSession = GeoapifyReverseGeocoder.privateSession) {
         self.apiKey = apiKey
         self.session = session
     }
@@ -54,7 +66,7 @@ struct GeoapifyReverseGeocoder: Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 15
-        request.cachePolicy = .returnCacheDataElseLoad
+        request.cachePolicy = .reloadIgnoringLocalCacheData
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw Failure.decoding }

@@ -115,11 +115,21 @@ final class LibraryModel {
     /// A cached snapshot means a warm launch costs a file read. The walk is the cost
     /// that gets reported: it is the first-run number.
     func loadOrBuildIndex(forceRebuild: Bool = false) async {
-        if !forceRebuild, let snapshot = indexStore.load(), snapshot.wasFullAccess == access.isExhaustive {
-            // A warm launch costs one file read plus two bounded PhotoKit fetches. The
-            // full walk runs again only when the library has actually moved.
-            let signature = PhotoLibraryIndexer.librarySignature()
-            if signature == snapshot.signature {
+        if !forceRebuild {
+            // A warm launch costs one file read plus two bounded PhotoKit fetches, and
+            // none of it happens on the main actor: a cached launch must not block the
+            // first frame for as long as the library is large. The full walk runs again
+            // only when the library has actually moved.
+            let store = indexStore
+            let wantsExhaustive = access.isExhaustive
+            let warm = await Task.detached(priority: .userInitiated) {
+                () -> (CaptureIndexSnapshot, LibrarySignature)? in
+                guard let snapshot = store.load(),
+                      snapshot.wasFullAccess == wantsExhaustive else { return nil }
+                return (snapshot, PhotoLibraryIndexer.librarySignature())
+            }.value
+
+            if let (snapshot, signature) = warm, signature == snapshot.signature {
                 index = snapshot.index
                 metrics = snapshot.metrics
                 indexBuiltAt = snapshot.builtAt
@@ -141,8 +151,8 @@ final class LibraryModel {
         }
 
         do {
-            let output = try await Task.detached(priority: .userInitiated) {
-                try indexer.buildIndex(progress: progress)
+            let (output, signature) = try await Task.detached(priority: .userInitiated) {
+                (try indexer.buildIndex(progress: progress), PhotoLibraryIndexer.librarySignature())
             }.value
             let built = CaptureIndex(records: output.records, timeZone: timeZone)
             index = built
@@ -150,17 +160,23 @@ final class LibraryModel {
             indexBuiltAt = Date()
             cache.invalidateAll()
 
-            let persistStart = Date()
             let snapshot = CaptureIndexSnapshot(
                 builtAt: Date(),
                 engineVersion: ReconstructionVersion.engine,
                 index: built,
                 metrics: output.metrics,
                 wasFullAccess: access.isExhaustive,
-                signature: PhotoLibraryIndexer.librarySignature()
+                signature: signature
             )
-            try? indexStore.save(snapshot)
-            metrics?.persistSeconds = Date().timeIntervalSince(persistStart)
+            let store = indexStore
+            let persistSeconds = await Task.detached(priority: .userInitiated) {
+                (try? store.save(snapshot)) ?? 0
+            }.value
+            // The reported total is what the run cost, persistence included, both here
+            // and in the snapshot a later warm launch reads back.
+            var measured = output.metrics
+            measured.persistSeconds = persistSeconds
+            metrics = measured
 
             await finishIndexing()
         } catch is CancellationError {

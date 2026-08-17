@@ -8,27 +8,70 @@ import UIKit
 /// PhotoKit's own cache through `PHCachingImageManager`, which is also why an
 /// iCloud-only original does not stall a scroll: network access is off for inline
 /// thumbnails and only turned on for a capture the person opened.
+///
+/// What has been decoded is held in a bounded cache the system empties under memory
+/// pressure, so a long scroll through a large library never accumulates a library's
+/// worth of bitmaps. Beyond that cache, the only strong reference to an image is the
+/// view currently drawing it.
 @MainActor
 @Observable
 final class ThumbnailStore {
     private let manager = PHCachingImageManager()
-    private var images: [String: UIImage] = [:]
-    private var requested: Set<String> = []
-    private var assets: [String: PHAsset] = [:]
+    private let images = NSCache<NSString, UIImage>()
+    private let assets = NSCache<NSString, PHAsset>()
 
-    func image(for reference: MediaReference, targetSize: CGSize) -> UIImage? {
-        let key = Self.key(reference.localIdentifier, targetSize)
-        if let image = images[key] { return image }
-        request(reference, targetSize: targetSize)
-        return nil
+    init() {
+        images.totalCostLimit = 48 * 1024 * 1024
+        images.countLimit = 200
+        assets.countLimit = 1_000
     }
 
-    func request(_ reference: MediaReference, targetSize: CGSize, allowNetwork: Bool = false) {
-        let key = Self.key(reference.localIdentifier, targetSize)
-        guard !requested.contains(key) else { return }
-        requested.insert(key)
+    /// What is already decoded at this size, if anything.
+    func cachedImage(for reference: MediaReference, targetSize: CGSize) -> UIImage? {
+        images.object(forKey: Self.key(reference.localIdentifier, targetSize) as NSString)
+    }
 
-        guard let asset = asset(for: reference.localIdentifier) else { return }
+    /// Every delivery PhotoKit makes for one request, the degraded pass first.
+    ///
+    /// The stream ends once the full-quality image has arrived or the request came back
+    /// with nothing. A caller that goes away before then ends its own iteration, which
+    /// stops any work that has not been handed to PhotoKit yet.
+    func deliveries(
+        for reference: MediaReference,
+        targetSize: CGSize,
+        allowNetwork: Bool = false
+    ) -> AsyncStream<UIImage> {
+        AsyncStream { continuation in
+            let work = Task { @MainActor [weak self] in
+                await self?.deliver(
+                    reference,
+                    targetSize: targetSize,
+                    allowNetwork: allowNetwork,
+                    to: continuation
+                )
+            }
+            continuation.onTermination = { _ in work.cancel() }
+        }
+    }
+
+    private func deliver(
+        _ reference: MediaReference,
+        targetSize: CGSize,
+        allowNetwork: Bool,
+        to continuation: AsyncStream<UIImage>.Continuation
+    ) async {
+        let key = Self.key(reference.localIdentifier, targetSize)
+        if let cached = images.object(forKey: key as NSString) {
+            continuation.yield(cached)
+            continuation.finish()
+            return
+        }
+
+        guard let asset = await asset(for: reference.localIdentifier), !Task.isCancelled else {
+            continuation.finish()
+            return
+        }
+
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic
         options.resizeMode = .fast
@@ -39,21 +82,42 @@ final class ThumbnailStore {
             targetSize: targetSize,
             contentMode: .aspectFill,
             options: options
-        ) { [weak self] image, _ in
-            guard let image else { return }
+        ) { [weak self] image, info in
             MainActor.assumeIsolated {
-                self?.images[key] = image
+                guard let image else {
+                    continuation.finish()
+                    return
+                }
+                continuation.yield(image)
+                let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+                guard !isDegraded else { return }
+                self?.images.setObject(image, forKey: key as NSString, cost: Self.cost(of: image))
+                continuation.finish()
             }
         }
     }
 
-    private func asset(for localIdentifier: String) -> PHAsset? {
-        if let asset = assets[localIdentifier] { return asset }
-        let result = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
-        guard result.count > 0 else { return nil }
-        let asset = result.object(at: 0)
-        assets[localIdentifier] = asset
-        return asset
+    /// Resolves an identifier away from the main actor.
+    ///
+    /// `fetchAssets` is a Photos database read, and a scroll cannot be made to wait on
+    /// one. A lookup that comes back empty is not remembered, so an asset PhotoKit
+    /// failed to resolve once is asked for again the next time it appears rather than
+    /// being pinned to a placeholder for the rest of the session.
+    private func asset(for localIdentifier: String) async -> PHAsset? {
+        let key = localIdentifier as NSString
+        if let asset = assets.object(forKey: key) { return asset }
+        let resolved = await Task.detached(priority: .userInitiated) { () -> PHAsset? in
+            let result = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+            return result.count > 0 ? result.object(at: 0) : nil
+        }.value
+        guard let resolved else { return nil }
+        assets.setObject(resolved, forKey: key)
+        return resolved
+    }
+
+    private static func cost(of image: UIImage) -> Int {
+        guard let cgImage = image.cgImage else { return 1 }
+        return cgImage.bytesPerRow * cgImage.height
     }
 
     private static func key(_ identifier: String, _ size: CGSize) -> String {
@@ -64,6 +128,7 @@ final class ThumbnailStore {
 /// One capture on the page.
 struct MediaThumbnail: View {
     @Environment(ThumbnailStore.self) private var store
+    @State private var image: UIImage?
 
     let reference: MediaReference
     var targetSize: CGSize = CGSize(width: 600, height: 600)
@@ -76,7 +141,7 @@ struct MediaThumbnail: View {
         Rectangle()
             .fill(Palette.smokedGlass)
             .overlay {
-                if let image = store.image(for: reference, targetSize: targetSize) {
+                if let image {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
@@ -109,8 +174,15 @@ struct MediaThumbnail: View {
                 }
             }
             .clipped()
-            .task {
-                store.request(reference, targetSize: targetSize, allowNetwork: allowNetwork)
+            .task(id: reference.localIdentifier) {
+                image = store.cachedImage(for: reference, targetSize: targetSize)
+                for await delivered in store.deliveries(
+                    for: reference,
+                    targetSize: targetSize,
+                    allowNetwork: allowNetwork
+                ) {
+                    image = delivered
+                }
             }
     }
 }
