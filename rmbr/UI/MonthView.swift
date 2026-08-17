@@ -42,8 +42,10 @@ struct MonthView: View {
     /// The credit owed by the stored labels these rows print.
     private func attributions(for dates: [LocalDate]) -> [String] {
         var lines: [String] = []
+        var credits: Set<String> = []
         for date in dates {
-            for line in model.summary(for: date).attributions where !lines.contains(line) {
+            for line in model.summary(for: date).attributions
+            where credits.insert(ResolvedPlaceLabel.creditKey(line)).inserted {
                 lines.append(line)
             }
         }
@@ -74,9 +76,12 @@ struct MonthView: View {
                 ? "This month is here because that day has the most moments."
                 : "This month is here because that day has the most moments rmbr can see."
         case .greatestEligibleMediaCount:
+            // The cascade compared displayable media, not every capture: a day of
+            // screenshots can hold more and still not win this tier.
             return sawEverything
-                ? "This month is here because that day has the most captures."
-                : "This month is here because that day has the most captures rmbr can see."
+                ? "This month is here because that day has the most media rmbr can show."
+                : "This month is here because that day has the most media rmbr can show"
+                    + " among the days it can see."
         case .nearestMonthMidpoint:
             return "This month is here because that day sits nearest its middle."
         }

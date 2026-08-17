@@ -27,6 +27,9 @@ final class ThumbnailStore {
     private var inFlight: [String: Request] = [:]
     private var preheated: [String: Preheat] = [:]
     private var preheatWork: [String: Task<Void, Never>] = [:]
+    /// Bumped by every purge. A fetch issued before one describes a grant that has since
+    /// been narrowed, so its answer is discarded rather than allowed back into the cache.
+    private var generation = 0
 
     /// One PhotoKit request and everybody waiting on it.
     @MainActor
@@ -142,6 +145,7 @@ final class ThumbnailStore {
     /// requests are cancelled, resolved assets and decoded pixels are dropped, and every
     /// preheated window is handed back to PhotoKit.
     func purge() {
+        generation += 1
         for key in Array(inFlight.keys) {
             if let requestID = inFlight[key]?.requestID { manager.cancelImageRequest(requestID) }
             finish(key)
@@ -260,12 +264,16 @@ final class ThumbnailStore {
         }
 
         if !missing.isEmpty {
+            let issued = generation
             let fetched = await Task.detached(priority: .userInitiated) { () -> [PHAsset] in
                 let result = PHAsset.fetchAssets(withLocalIdentifiers: missing, options: nil)
                 var assets: [PHAsset] = []
                 result.enumerateObjects { asset, _, _ in assets.append(asset) }
                 return assets
             }.value
+            // A purge landed while PhotoKit was answering, so these belong to a grant
+            // that no longer applies.
+            guard issued == generation else { return [] }
             for asset in fetched {
                 assets.setObject(asset, forKey: asset.localIdentifier as NSString)
                 resolved[asset.localIdentifier] = asset

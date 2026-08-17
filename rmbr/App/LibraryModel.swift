@@ -56,6 +56,15 @@ final class DayCache: @unchecked Sendable {
         evictOverflow()
     }
 
+    /// Drops one day, so the next read composes it against whatever is known now.
+    func invalidate(_ date: LocalDate) {
+        lock.lock(); defer { lock.unlock() }
+        let key = date.description
+        storage[key] = nil
+        scheduled.remove(key)
+        if let index = opened.firstIndex(of: key) { opened.remove(at: index) }
+    }
+
     func invalidateAll() {
         lock.lock(); defer { lock.unlock() }
         storage.removeAll()
@@ -218,6 +227,9 @@ final class LibraryModel {
     /// A cached snapshot means a warm launch costs a file read. The walk is the cost
     /// that gets reported: it is the first-run number.
     func loadOrBuildIndex(forceRebuild: Bool = false) async {
+        // Indexing a library rmbr may not read would walk nothing and then report itself
+        // ready, which is a claim about an empty library rather than about a refusal.
+        guard access.canRead else { return }
         guard !isLoading else {
             refreshPending = true
             return
@@ -378,9 +390,18 @@ final class LibraryModel {
         )
         await composeBackfill(index: index)
 
-        // Nothing built against a grant that has since changed may be published. The
-        // queued refresh rebuilds against whatever rmbr is allowed to see now.
-        guard PhotoLibraryAuthorization.current == access else {
+        // Nothing built against a grant that has since changed may be published, and the
+        // authorisation enum alone cannot see that: one limited selection swapped for
+        // another is still `.limited`. The signature is read once more, and a check that
+        // arrived while this ran is reason enough to hold back on its own.
+        let wantsExhaustive = access.isExhaustive
+        let latestSignature = await Task.detached(priority: .userInitiated) {
+            PhotoLibraryIndexer.librarySignature(coversWholeLibrary: wantsExhaustive)
+        }.value
+        guard !refreshPending,
+              PhotoLibraryAuthorization.current == access,
+              latestSignature == currentSignature else {
+            // The queued refresh rebuilds against whatever rmbr is allowed to see now.
             refreshPending = true
             return
         }
@@ -414,13 +435,16 @@ final class LibraryModel {
         let generation = libraryGeneration
 
         // Composed away from the shared cache, so a pass overtaken by a rebuild cannot
-        // put records the new grant may not cover in front of anybody.
-        let outcome = await Task.detached(priority: .userInitiated) { () -> ([Day], Double, [String]) in
+        // put records the new grant may not cover in front of anybody. A detached task
+        // does not inherit the caller's cancellation, so it is forwarded explicitly and
+        // answered inside the loop: nobody is waiting for a window nobody is looking at.
+        let work = Task.detached(priority: .userInitiated) { () -> ([Day], Double, [String])? in
             let started = Date()
             var days: [Day] = []
             var attributions: [String] = []
             var credits: Set<String> = []
             for date in dates {
+                if Task.isCancelled { return nil }
                 let result = composer.compose(
                     date: date,
                     captures: index.records(on: date),
@@ -438,11 +462,17 @@ final class LibraryModel {
                 }
             }
             return (days, Date().timeIntervalSince(started), attributions)
-        }.value
+        }
+        let outcome = await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
 
-        // The library moved while this pass ran, so what it composed describes records
-        // rmbr may no longer be allowed to show. It is dropped without ever being stored.
-        guard libraryGeneration == generation else { return }
+        // Cancelled, or the library moved while this pass ran - in which case what it
+        // composed describes records rmbr may no longer be allowed to show. Either way it
+        // is dropped without ever being stored.
+        guard let outcome, !Task.isCancelled, libraryGeneration == generation else { return }
 
         cache.clearSchedule()
         for day in outcome.0 { cache.store(day, scheduled: true) }
@@ -570,7 +600,12 @@ final class LibraryModel {
         // from the index this call started with would put back records the new grant may
         // not cover. Or the person left the day, in which case a full recomposition is
         // work nobody is waiting for.
-        guard !report.wasCancelled, !Task.isCancelled else { return }
+        guard !report.wasCancelled, !Task.isCancelled else {
+            // A label that did land is owed to this day: the coordinate is answered now,
+            // so nothing would ask again and the cached day would stay unnamed forever.
+            if report.resolved > 0 || report.unlabelled > 0 { cache.invalidate(date) }
+            return
+        }
         guard libraryGeneration == generation, let current = self.index else { return }
 
         // Every composed day may now carry a label it did not have, so the composed

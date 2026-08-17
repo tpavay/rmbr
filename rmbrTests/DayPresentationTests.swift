@@ -149,6 +149,22 @@ struct DayPresentationTests {
         )
     }
 
+    @Test("Filtering never reduces the count of captures a day is said to have held")
+    func mixedFilteredDayCountsEveryCaptureItCanSee() {
+        let captures = [
+            Fixture.capture("09:05:00", on: date, in: Fixture.chicago),
+            Fixture.capture("09:06:00", on: date, in: Fixture.chicago, isScreenshot: true)
+        ]
+        let limited = composer.compose(
+            date: date,
+            captures: captures,
+            context: Fixture.context(fullAccess: false)
+        ).day
+        // One is displayable and one is kept out, but the day held both.
+        #expect(limited.media.eligibleMediaIDs.count == 1)
+        #expect(DayFormatting.rowFallback(for: limited) == "2 captures rmbr can see")
+    }
+
     @Test("A place count drawn from part of a library says so")
     func limitedPlaceCountIsQualified() {
         let elsewhere = Coordinate(latitude: 41.9000, longitude: -87.6200)

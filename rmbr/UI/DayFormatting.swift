@@ -167,13 +167,16 @@ enum DayFormatting {
     /// that genuinely holds nothing says so (RQ-053).
     static func rowFallback(for day: Day) -> String {
         let visible = day.media.eligibleMediaIDs.count
+        let excluded = day.media.exclusionCounts.total
         if visible > 0 {
-            return "\(count(visible, singular: "capture", plural: "captures")) rmbr can see"
+            // Both groups are captures rmbr could see; filtering decides what is shown,
+            // never how many the day is said to have held.
+            let known = count(visible + excluded, singular: "capture", plural: "captures")
+            return day.hasExhaustiveCounts ? known : "\(known) rmbr can see"
         }
         // A day whose only captures were filtered out of display still held them, and
         // saying nothing was recorded would be a claim about the day rather than about
         // what rmbr shows of it.
-        let excluded = day.media.exclusionCounts.total
         if excluded > 0 {
             return "\(count(excluded, singular: "capture", plural: "captures")) kept out of memories"
         }

@@ -100,7 +100,7 @@ struct DiagnosticsView: View {
                             rebuilding = false
                         }
                     }
-                    .disabled(rebuilding)
+                    .disabled(rebuilding || !model.access.canRead)
                 }
             }
             .navigationTitle("Reconstruction")
