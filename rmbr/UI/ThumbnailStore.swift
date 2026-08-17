@@ -294,29 +294,31 @@ final class ThumbnailStore {
     }
 }
 
+/// Pixels, and the grant they were fetched under.
+///
+/// A view holds the only strong reference to what it is drawing, so the generation
+/// travels with the image rather than being checked when the fetch is restarted: the
+/// store purging is enough to stop these being drawn, in the same main-actor turn.
+struct DeliveredImage {
+    let image: UIImage
+    let generation: Int
+
+    /// The pixels, and nothing at all once the grant they came from has ended.
+    func pixels(inGeneration current: Int) -> UIImage? {
+        generation == current ? image : nil
+    }
+}
+
 /// One capture on the page.
 struct MediaThumbnail: View {
     @Environment(ThumbnailStore.self) private var store
-    @State private var delivered: Delivered?
+    @State private var delivered: DeliveredImage?
 
     let reference: MediaReference
     var targetSize: CGSize = CGSize(width: 600, height: 600)
     var allowNetwork = false
 
-    /// Pixels, and the grant they were fetched under.
-    ///
-    /// A view holds the only strong reference to what it is drawing, so the generation
-    /// travels with the image rather than being checked when the fetch is restarted: the
-    /// store purging is enough to stop these being drawn, in the same main-actor turn.
-    private struct Delivered {
-        let image: UIImage
-        let generation: Int
-    }
-
-    private var image: UIImage? {
-        guard let delivered, delivered.generation == store.generation else { return nil }
-        return delivered.image
-    }
+    private var image: UIImage? { delivered?.pixels(inGeneration: store.generation) }
 
     var body: some View {
         // The pixels sit in an overlay rather than a stack, so an aspect-fill image can
@@ -364,13 +366,13 @@ struct MediaThumbnail: View {
             .task(id: "\(store.generation):\(reference.localIdentifier)") {
                 let generation = store.generation
                 delivered = store.cachedImage(for: reference, targetSize: targetSize)
-                    .map { Delivered(image: $0, generation: generation) }
+                    .map { DeliveredImage(image: $0, generation: generation) }
                 for await image in store.deliveries(
                     for: reference,
                     targetSize: targetSize,
                     allowNetwork: allowNetwork
                 ) {
-                    delivered = Delivered(image: image, generation: generation)
+                    delivered = DeliveredImage(image: image, generation: generation)
                 }
             }
     }

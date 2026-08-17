@@ -15,35 +15,65 @@ struct DayPageView: View {
     private static let gridTargetSize = CGSize(width: 600, height: 600)
 
     var body: some View {
-        let day = model.day(for: date)
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                composition(day)
-                if !day.moments.isEmpty { chronology(day) }
-                figures(day)
-                attribution(day)
+        content
+            .background(Palette.deepInk.ignoresSafeArea())
+            .navigationBarTitleDisplayMode(.inline)
+            // The index revision is the identity: it moves when the library is dropped and
+            // again when a reconstruction commits, so a page left open across a narrowed
+            // grant asks about the anchors of the library that exists now, and asks once
+            // it exists rather than while there is nothing to ask about.
+            .task(id: "\(model.indexRevision):\(date.description)") {
+                await model.resolvePlaceNames(for: date)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20)
-            .padding(.top, 52)
-            .padding(.bottom, 32)
+            // A viewer left open over a library that has just been narrowed is showing
+            // photographs from a grant that no longer exists.
+            .onChange(of: thumbnails.generation) { _, _ in viewerMediaID = nil }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if model.hasCommittedIndex {
+            let day = model.day(for: date)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 28) {
+                    composition(day)
+                    if !day.moments.isEmpty { chronology(day) }
+                    figures(day)
+                    attribution(day)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.top, 52)
+                .padding(.bottom, 32)
+            }
+            .onAppear { preheat(day) }
+            .onDisappear { thumbnails.stopPreheating(window: preheatWindow) }
+            .sheet(item: $viewerMediaID) { mediaID in
+                MediaViewer(day: day, startAt: mediaID)
+            }
+        } else {
+            rebuilding
         }
-        .background(Palette.deepInk.ignoresSafeArea())
-        .navigationBarTitleDisplayMode(.inline)
-        // The generation is part of the identity: a lookup issued against a library that
-        // has since been dropped would compose this day from records the grant may no
-        // longer cover, so it is restarted against the one that exists now.
-        .task(id: "\(model.libraryGeneration):\(date.description)") {
-            await model.resolvePlaceNames(for: date)
+    }
+
+    /// What the page says while the library it describes is being read again.
+    ///
+    /// There is no index to compose from, and composing anyway would print a day that
+    /// held nothing - a claim about the day rather than about what rmbr can see of it
+    /// right now (RQ-043, RQ-053).
+    private var rebuilding: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(DayFormatting.heading(for: date, today: model.today))
+                .font(.editorial(32))
+                .foregroundStyle(date == model.today ? Palette.emberGlow : Palette.moonlightWhite)
+                .accessibilityAddTraits(.isHeader)
+            Text("rmbr is reading your library. This day comes back when it has finished.")
+                .font(.utility(15))
+                .foregroundStyle(Palette.dustyZinc)
         }
-        .onAppear { preheat(day) }
-        .onDisappear { thumbnails.stopPreheating(window: preheatWindow) }
-        // A viewer left open over a library that has just been narrowed is showing
-        // photographs from a grant that no longer exists.
-        .onChange(of: thumbnails.generation) { _, _ in viewerMediaID = nil }
-        .sheet(item: $viewerMediaID) { mediaID in
-            MediaViewer(day: day, startAt: mediaID)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 20)
+        .padding(.top, 52)
     }
 
     private var preheatWindow: String { "day-\(date.description)" }

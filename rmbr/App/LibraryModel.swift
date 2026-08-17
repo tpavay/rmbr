@@ -82,6 +82,41 @@ final class DayCache: @unchecked Sendable {
     }
 }
 
+/// Everything the model reads that is not its own state.
+///
+/// In the app this is PhotoKit and the snapshot on disk. It is a value of closures
+/// rather than a set of calls to globals so that the invalidation and generation rules -
+/// which are entirely about what happens across a suspension point - can be exercised
+/// against a library a test supplies and a load a test can hold open.
+struct LibrarySource: Sendable {
+    /// Confirming the snapshot directory is excluded from backup touches the file system,
+    /// so the store that does it is resolved once rather than on every read and write.
+    private static let snapshotStore = CaptureIndexStore()
+
+    var authorization: @Sendable () -> PhotoLibraryAccess = { PhotoLibraryAuthorization.current }
+
+    var requestAuthorization: @Sendable () async -> PhotoLibraryAccess = {
+        await PhotoLibraryAuthorization.request()
+    }
+
+    var signature: @Sendable (_ coversWholeLibrary: Bool) async -> LibrarySignature = {
+        PhotoLibraryIndexer.librarySignature(coversWholeLibrary: $0)
+    }
+
+    var loadSnapshot: @Sendable () async -> CaptureIndexSnapshot? = { snapshotStore.load() }
+
+    /// Answers what writing the snapshot cost, and zero when it could not be written.
+    var saveSnapshot: @Sendable (CaptureIndexSnapshot) async -> Double = {
+        (try? snapshotStore.save($0)) ?? 0
+    }
+
+    var buildIndex: @Sendable (
+        TimeZone, @escaping PhotoLibraryIndexer.ProgressHandler
+    ) async throws -> PhotoLibraryIndexer.Output = {
+        try PhotoLibraryIndexer(timeZone: $0).buildIndex(progress: $1)
+    }
+}
+
 /// Everything the interface reads, and the only thing that talks to the sources.
 @MainActor
 @Observable
@@ -107,14 +142,18 @@ final class LibraryModel {
     /// outside this model - decoded thumbnails above all - belongs to one generation and
     /// must be released when it ends, because the next one may be allowed to see less.
     private(set) var libraryGeneration = 0
+    /// Bumped whenever the installed index changes - dropped by an invalidation, or
+    /// replaced by a load that committed. Work that only makes sense against an index
+    /// belongs to one revision of it, and runs again when this moves.
+    private(set) var indexRevision = 0
 
     /// Owned rather than observed, so that dropping the library and dropping the pixels
     /// drawn from it are one operation and cannot be separated by a suspension point.
     let thumbnails = ThumbnailStore()
 
     let tuning = ReconstructionTuningProfile.v1
+    private let source: LibrarySource
     private let composer: DayComposer
-    private let indexStore = CaptureIndexStore()
     private let resolver = PlaceNameResolver()
     private let credentials = GeoapifyCredentialStore()
     private let cache = DayCache()
@@ -127,6 +166,11 @@ final class LibraryModel {
     private var ledgerRevision = 0
     private var representativeDates: Set<LocalDate> = []
     private var placeRequestsInFlight: Set<String> = []
+    /// Coordinates whose newly stored labels the cached days do not carry yet, and
+    /// whether a pass is already draining them. One pass at a time is what stops two
+    /// lookups composing the same days against two different ledgers.
+    private var pendingRefreshCoordinates: [Coordinate] = []
+    private var isRefreshingDays = false
     private var signalsByDate: [LocalDate: DaySignals] = [:]
     private var hasStarted = false
     private var isLoading = false
@@ -139,7 +183,8 @@ final class LibraryModel {
     private var currentSignature: LibrarySignature?
     private var builtForDay: LocalDate?
 
-    init() {
+    init(source: LibrarySource = LibrarySource()) {
+        self.source = source
         self.composer = DayComposer(tuning: .v1, boundaryPolicy: MidnightDayBoundaryPolicy())
     }
 
@@ -153,11 +198,18 @@ final class LibraryModel {
     var indexedRecordCount: Int { index?.totalRecordCount ?? 0 }
     var earliestIndexedDate: LocalDate? { index?.earliestDate }
 
+    /// Whether a reconstruction is committed and a day may be described from it.
+    ///
+    /// A day composed while the index is being rebuilt would be composed from no records
+    /// at all, and would read as a day that held nothing. A surface asks this first and
+    /// says rmbr is reading rather than printing that answer.
+    var hasCommittedIndex: Bool { index != nil && phase == .ready }
+
     // MARK: - Lifecycle
 
     func start() async {
         hasStarted = true
-        access = PhotoLibraryAuthorization.current
+        access = source.authorization()
         hasPlaceCredential = credentials.hasKey
         adoptLedger(await resolver.currentLedger)
 
@@ -188,7 +240,7 @@ final class LibraryModel {
         // limited grant can also be re-chosen without the enum moving at all, and finding
         // that out means reading the new selection, which must not happen while
         // photographs the person may have just revoked are still visible.
-        let current = PhotoLibraryAuthorization.current
+        let current = source.authorization()
         hasPlaceCredential = credentials.hasKey
         let changed = current != access
         access = current
@@ -230,7 +282,9 @@ final class LibraryModel {
     /// asset, in-flight request and preheated window the thumbnail store still holds.
     private func invalidateLibrary() {
         libraryGeneration += 1
+        indexRevision += 1
         index = nil
+        pendingRefreshCoordinates = []
         currentSignature = nil
         builtForDay = nil
         lifeEntries = []
@@ -249,7 +303,7 @@ final class LibraryModel {
     }
 
     func requestAccess() async {
-        access = await PhotoLibraryAuthorization.request()
+        access = await source.requestAuthorization()
         switch access {
         case .full, .limited: await loadOrBuildIndex()
         case .denied, .restricted, .notDetermined: phase = .permissionRefused(access)
@@ -286,18 +340,16 @@ final class LibraryModel {
             // none of it happens on the main actor: a cached launch must not block the
             // first frame for as long as the library is large. The full walk runs again
             // only when the library has actually moved.
-            let store = indexStore
+            let source = source
             let wantsExhaustive = access.isExhaustive
             let generation = libraryGeneration
             let warm = await Task.detached(priority: .userInitiated) {
                 () -> (CaptureIndexSnapshot, LibrarySignature)? in
-                guard let snapshot = store.load(),
+                guard let snapshot = await source.loadSnapshot(),
                       snapshot.wasFullAccess == wantsExhaustive else { return nil }
                 // Under a limited grant the signature also fingerprints which assets the
                 // grant covers, so swapping one chosen photograph for another is seen.
-                return (snapshot, PhotoLibraryIndexer.librarySignature(
-                    coversWholeLibrary: wantsExhaustive
-                ))
+                return (snapshot, await source.signature(wantsExhaustive))
             }.value
 
             // A grant that moved while the snapshot was being read took the library this
@@ -319,6 +371,7 @@ final class LibraryModel {
                 // the previous generation is still being served when this one starts.
                 invalidateLibrary()
                 index = snapshot.index
+                indexRevision += 1
                 metrics = snapshot.metrics
                 indexBuiltAt = snapshot.builtAt
                 loadedFromCache = true
@@ -339,13 +392,16 @@ final class LibraryModel {
         let generation = libraryGeneration
 
         let timeZone = TimeZone.current
-        let indexer = PhotoLibraryIndexer(timeZone: timeZone)
+        // A walk that has been overtaken keeps counting, and its progress describes a
+        // library that is no longer being served. It reports nothing once that happens.
         let progress: PhotoLibraryIndexer.ProgressHandler = { [weak self] done, total in
             Task { @MainActor [weak self] in
-                self?.phase = .indexing(done: done, total: total)
+                guard let self, self.libraryGeneration == generation else { return }
+                self.phase = .indexing(done: done, total: total)
             }
         }
 
+        let source = source
         let wantsExhaustive = access.isExhaustive
         do {
             // The walk and the signature are separate PhotoKit reads, so the selection
@@ -353,13 +409,9 @@ final class LibraryModel {
             // do not belong to. Bracketing the walk is what makes the pair consistent.
             let walked = try await Task.detached(priority: .userInitiated) {
                 () -> (PhotoLibraryIndexer.Output, LibrarySignature)? in
-                let before = PhotoLibraryIndexer.librarySignature(
-                    coversWholeLibrary: wantsExhaustive
-                )
-                let output = try indexer.buildIndex(progress: progress)
-                let after = PhotoLibraryIndexer.librarySignature(
-                    coversWholeLibrary: wantsExhaustive
-                )
+                let before = await source.signature(wantsExhaustive)
+                let output = try await source.buildIndex(timeZone, progress)
+                let after = await source.signature(wantsExhaustive)
                 guard before == after else { return nil }
                 return (output, after)
             }.value
@@ -372,6 +424,7 @@ final class LibraryModel {
             }
             let built = CaptureIndex(records: output.records, timeZone: timeZone)
             index = built
+            indexRevision += 1
             metrics = output.metrics
             indexBuiltAt = Date()
             currentSignature = signature
@@ -386,10 +439,13 @@ final class LibraryModel {
                 wasFullAccess: access.isExhaustive,
                 signature: signature
             )
-            let store = indexStore
-            let persistSeconds = await Task.detached(priority: .userInitiated) {
-                (try? store.save(snapshot)) ?? 0
-            }.value
+            let persistSeconds = await source.saveSnapshot(snapshot)
+            // A grant that went while the snapshot was being written took this run's
+            // figures with it; they describe a library that is no longer on screen.
+            guard libraryGeneration == generation else {
+                refreshPending = true
+                return
+            }
             // The reported total is what the run cost, persistence included, both here
             // and in the snapshot a later warm launch reads back.
             var measured = output.metrics
@@ -398,8 +454,10 @@ final class LibraryModel {
 
             await finishIndexing()
         } catch is CancellationError {
+            guard libraryGeneration == generation else { return }
             phase = .failed("Indexing was cancelled.")
         } catch {
+            guard libraryGeneration == generation else { return }
             phase = .failed(String(describing: error))
         }
     }
@@ -447,12 +505,10 @@ final class LibraryModel {
         // another is still `.limited`. The signature is read once more, and a check that
         // arrived while this ran is reason enough to hold back on its own.
         let wantsExhaustive = access.isExhaustive
-        let latestSignature = await Task.detached(priority: .userInitiated) {
-            PhotoLibraryIndexer.librarySignature(coversWholeLibrary: wantsExhaustive)
-        }.value
+        let latestSignature = await source.signature(wantsExhaustive)
         guard !refreshPending,
               libraryGeneration == generation,
-              PhotoLibraryAuthorization.current == access,
+              source.authorization() == access,
               latestSignature == currentSignature else {
             // The queued refresh rebuilds against whatever rmbr is allowed to see now.
             refreshPending = true
@@ -482,56 +538,66 @@ final class LibraryModel {
         }
 
         let composer = composer
-        let placeLabels = ledger.lookup
         let hasFullAccess = access.isExhaustive
         let timeZone = index.timeZone
-        let generation = libraryGeneration
 
-        // Composed away from the shared cache, so a pass overtaken by a rebuild cannot
-        // put records the new grant may not cover in front of anybody. A detached task
-        // does not inherit the caller's cancellation, so it is forwarded explicitly and
-        // answered inside the loop: nobody is waiting for a window nobody is looking at.
-        let work = Task.detached(priority: .userInitiated) { () -> ([Day], Double, [String])? in
-            let started = Date()
-            var days: [Day] = []
-            var attributions: [String] = []
-            var credits: Set<String> = []
-            for date in dates {
-                if Task.isCancelled { return nil }
-                let result = composer.compose(
-                    date: date,
-                    captures: index.records(on: date),
-                    context: DayComposer.Context(
-                        timeZone: timeZone,
-                        hasFullLibraryAccess: hasFullAccess,
-                        placeLabels: placeLabels,
-                        composedAt: Date()
+        while true {
+            let generation = libraryGeneration
+            let revision = ledgerRevision
+            let placeLabels = ledger.lookup
+
+            // Composed away from the shared cache, so a pass overtaken by a rebuild cannot
+            // put records the new grant may not cover in front of anybody. A detached task
+            // does not inherit the caller's cancellation, so it is forwarded explicitly and
+            // answered inside the loop: nobody is waiting for a window nobody is looking at.
+            let work = Task.detached(priority: .userInitiated) { () -> ([Day], Double, [String])? in
+                let started = Date()
+                var days: [Day] = []
+                var attributions: [String] = []
+                var credits: Set<String> = []
+                for date in dates {
+                    if Task.isCancelled { return nil }
+                    let result = composer.compose(
+                        date: date,
+                        captures: index.records(on: date),
+                        context: DayComposer.Context(
+                            timeZone: timeZone,
+                            hasFullLibraryAccess: hasFullAccess,
+                            placeLabels: placeLabels,
+                            composedAt: Date()
+                        )
                     )
-                )
-                days.append(result.day)
-                for line in result.day.placeAttributions
-                where credits.insert(ResolvedPlaceLabel.creditKey(line)).inserted {
-                    attributions.append(line)
+                    days.append(result.day)
+                    for line in result.day.placeAttributions
+                    where credits.insert(ResolvedPlaceLabel.creditKey(line)).inserted {
+                        attributions.append(line)
+                    }
                 }
+                return (days, Date().timeIntervalSince(started), attributions)
             }
-            return (days, Date().timeIntervalSince(started), attributions)
-        }
-        let outcome = await withTaskCancellationHandler {
-            await work.value
-        } onCancel: {
-            work.cancel()
-        }
+            let outcome = await withTaskCancellationHandler {
+                await work.value
+            } onCancel: {
+                work.cancel()
+            }
 
-        // Cancelled, or the library moved while this pass ran - in which case what it
-        // composed describes records rmbr may no longer be allowed to show. Either way it
-        // is dropped without ever being stored.
-        guard let outcome, !Task.isCancelled, libraryGeneration == generation else { return }
+            // Cancelled, or the library moved while this pass ran - in which case what it
+            // composed describes records rmbr may no longer be allowed to show. Either way
+            // it is dropped without ever being stored.
+            guard let outcome, !Task.isCancelled, libraryGeneration == generation else { return }
+            // A lookup answered while this pass composed, so these days are named by a
+            // ledger that has already been superseded. Committing them would take a label
+            // back off a day that will never ask for it again, the coordinate being
+            // answered; the window is composed again against the ledger as it is now.
+            guard ledgerRevision == revision else { continue }
 
-        cache.clearSchedule()
-        for day in outcome.0 { cache.store(day, scheduled: true) }
-        composedDayCount = dates.count
-        composeSeconds = outcome.1
-        placeAttributions = outcome.2
+            cache.clearSchedule()
+            for day in outcome.0 { cache.store(day, scheduled: true) }
+            composedDayCount = dates.count
+            composeSeconds = outcome.1
+            placeAttributions = outcome.2
+            return
+        }
     }
 
     /// Prints what the run cost, so a device run produces a number without a screenshot.
@@ -637,7 +703,9 @@ final class LibraryModel {
             )
         )
         guard !result.pendingPlaceLookups.isEmpty else { return }
-        let key = date.description
+        // Keyed to the index it is asking about, so a lookup still in flight against a
+        // library that has been replaced cannot stop this day being resolved again.
+        let key = "\(indexRevision):\(date.description)"
         guard !placeRequestsInFlight.contains(key) else { return }
         placeRequestsInFlight.insert(key)
         defer { placeRequestsInFlight.remove(key) }
@@ -680,17 +748,23 @@ final class LibraryModel {
     /// place, which is what keeps the composed window whole.
     private func refreshDays(near coordinates: [Coordinate], index: CaptureIndex) async {
         guard !coordinates.isEmpty else { return }
+        pendingRefreshCoordinates.append(contentsOf: coordinates)
+        // One pass drains the queue. A day page open beside this one can answer its own
+        // coordinates at the same time, and two passes composing the same days against two
+        // different ledgers would race to commit; queued behind this one, the later
+        // coordinates are answered by a pass that reads the ledger after both have landed.
+        guard !isRefreshingDays else { return }
+        isRefreshingDays = true
+        defer { isRefreshingDays = false }
+
         let composer = composer
         let cache = cache
         let signals = signalsByDate
         let hasFullAccess = access.isExhaustive
         let timeZone = index.timeZone
 
-        // A day page open beside this one can answer its own coordinates while this pass
-        // runs, and committing over that would put a name back that the ledger has since
-        // improved on. The composition is redone against the ledger as it is now rather
-        // than dropped, because the label it carries would otherwise never be shown.
-        for _ in 0..<3 {
+        while !pendingRefreshCoordinates.isEmpty {
+            let coordinates = pendingRefreshCoordinates
             let generation = libraryGeneration
             let revision = ledgerRevision
             let placeLabels = ledger.lookup
@@ -723,6 +797,10 @@ final class LibraryModel {
             }.value
 
             guard libraryGeneration == generation else { return }
+            // A lookup landed while this pass composed, so these days are named by a
+            // superseded ledger. The coordinates stay queued and are composed again
+            // against the newer one rather than being abandoned: they are already answered
+            // for good, so no later lookup would ever put their labels on a day.
             guard ledgerRevision == revision else { continue }
             for day in refreshed where cache.contains(day.date) {
                 cache.store(day, scheduled: cache.isScheduled(day.date))
@@ -730,7 +808,7 @@ final class LibraryModel {
                 // path put it on screen.
                 mergeAttributions(from: day)
             }
-            return
+            pendingRefreshCoordinates.removeFirst(coordinates.count)
         }
     }
 
