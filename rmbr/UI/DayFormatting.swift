@@ -201,30 +201,38 @@ enum DayFormatting {
 /// counts of what rmbr can see, and say so whenever access is not exhaustive (RQ-053).
 struct DayRowSummary: Sendable, Hashable {
     let placeName: String?
-    let attribution: String?
-    let visibleMediaCount: Int
+    /// Every credit owed by the label this row prints.
+    let attributions: [String]
+    /// What the library held that day, before display filtering. A day whose captures
+    /// were all screenshots is a day that held those screenshots, not an empty one.
+    let counts: RawCaptureCounts
     let placeCount: Int
     let hasExhaustiveCounts: Bool
 
     var headline: String {
         if let placeName { return placeName }
-        if visibleMediaCount > 0 { return captureCount }
+        if let summary = DayFormatting.captureSummary(counts) { return qualified(summary) }
         return hasExhaustiveCounts ? "Nothing recorded" : "Nothing rmbr can see here"
     }
 
     var detail: String? {
         var parts: [String] = []
-        if placeName != nil, visibleMediaCount > 0 { parts.append(captureCount) }
+        if placeName != nil, let summary = DayFormatting.captureSummary(counts) {
+            parts.append(summary)
+        }
         if placeCount > 1 {
             parts.append(DayFormatting.count(placeCount, singular: "place", plural: "places"))
         }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        guard !parts.isEmpty else { return nil }
+        return qualified(parts.joined(separator: " · "))
     }
 
-    var isEmpty: Bool { placeName == nil && visibleMediaCount == 0 }
+    var isEmpty: Bool { placeName == nil && counts.accessibleCaptureCount == 0 }
 
-    private var captureCount: String {
-        let counted = DayFormatting.count(visibleMediaCount, singular: "capture", plural: "captures")
-        return hasExhaustiveCounts ? counted : "\(counted) rmbr can see"
+    /// Under limited access every figure here is drawn from the subset rmbr was shown,
+    /// places as much as captures, so the qualification covers the whole line rather
+    /// than only the part that happens to count photographs.
+    private func qualified(_ text: String) -> String {
+        hasExhaustiveCounts ? text : "\(text) rmbr can see"
     }
 }

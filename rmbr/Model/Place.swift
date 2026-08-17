@@ -112,8 +112,13 @@ enum PlaceLabelOrigin: String, Sendable, Codable, Hashable {
 ///
 /// Apple forbids permanent storage of MapKit place names, so the durable label comes
 /// from Geoapify, whose terms permit indefinite retention and require OpenStreetMap
-/// attribution wherever the stored data is reused. `attribution` travels with the
-/// label so no display path can drop it.
+/// attribution wherever the stored data is reused.
+///
+/// Two credits are owed and both travel with the label. The service credit is owed for
+/// using Geoapify at all, whichever datasource happened to answer, and the datasource
+/// credit is owed by the individual result - Geoapify answers from OpenAddresses and Who
+/// is On First as well as OpenStreetMap, so crediting only the datasource would let a day
+/// built from OpenAddresses results show no OpenStreetMap credit at all.
 struct ResolvedPlaceLabel: Sendable, Codable, Hashable {
     let text: String
     let specificity: PlaceSpecificity
@@ -121,10 +126,56 @@ struct ResolvedPlaceLabel: Sendable, Codable, Hashable {
     let confidence: Double?
     /// Provider name, e.g. `geoapify`.
     let provider: String
-    /// Attribution text that must appear wherever this label is shown.
+    /// Credit owed by the datasource that answered this particular query.
     let attribution: String
+    /// Credit owed for using the service, whatever answered.
+    let serviceAttribution: String
     /// When the label was fetched. The stored label is historical and is never re-resolved.
     let fetchedAt: Date
+
+    /// Every line that must appear wherever this label is shown, in display order.
+    var attributions: [String] {
+        var lines = [serviceAttribution]
+        if !attribution.isEmpty, attribution != serviceAttribution { lines.append(attribution) }
+        return lines
+    }
+
+    init(
+        text: String,
+        specificity: PlaceSpecificity,
+        origin: PlaceLabelOrigin,
+        confidence: Double?,
+        provider: String,
+        attribution: String,
+        serviceAttribution: String = OpenStreetMap.attribution,
+        fetchedAt: Date
+    ) {
+        self.text = text
+        self.specificity = specificity
+        self.origin = origin
+        self.confidence = confidence
+        self.provider = provider
+        self.attribution = attribution
+        self.serviceAttribution = serviceAttribution
+        self.fetchedAt = fetchedAt
+    }
+
+    /// A ledger written before the service credit was stored separately still names real
+    /// places, so it is read back with the service credit restored rather than discarded.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        text = try container.decode(String.self, forKey: .text)
+        specificity = try container.decode(PlaceSpecificity.self, forKey: .specificity)
+        origin = try container.decode(PlaceLabelOrigin.self, forKey: .origin)
+        confidence = try container.decodeIfPresent(Double.self, forKey: .confidence)
+        provider = try container.decode(String.self, forKey: .provider)
+        attribution = try container.decode(String.self, forKey: .attribution)
+        serviceAttribution = try container.decodeIfPresent(
+            String.self,
+            forKey: .serviceAttribution
+        ) ?? OpenStreetMap.attribution
+        fetchedAt = try container.decode(Date.self, forKey: .fetchedAt)
+    }
 }
 
 /// A place as it appears on one moment.

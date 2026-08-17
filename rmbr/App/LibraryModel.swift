@@ -16,44 +16,58 @@ enum LibraryPhase: Sendable, Hashable {
 /// Composition happens while a view is being laid out, so it must not invalidate the
 /// observation that triggered it. Keeping the cache outside the observed model is what
 /// stops that loop.
+/// The days the backfill schedule composed are kept apart from the days a person happened
+/// to open. Only the opened ones are subject to eviction, so a long browse can never cost
+/// the scheduled window its composition and leave Life rebuilding a row mid-layout.
 final class DayCache: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String: Day] = [:]
-    private var order: [String] = []
-    private var limit: Int
+    private var scheduled: Set<String> = []
+    private var opened: [String] = []
+    private let openedLimit: Int
 
-    init(limit: Int = 600) { self.limit = limit }
-
-    /// Grows the cache to hold a whole composed window.
-    ///
-    /// The backfill schedule composes the recent window up front, and a cache smaller
-    /// than that window would evict the earliest of those days while the later ones were
-    /// still being composed - paying for the work and then throwing it away.
-    func reserve(atLeast count: Int) {
-        lock.lock(); defer { lock.unlock() }
-        limit = max(limit, count)
-    }
+    init(openedLimit: Int = 256) { self.openedLimit = openedLimit }
 
     func day(_ date: LocalDate) -> Day? {
         lock.lock(); defer { lock.unlock() }
         return storage[date.description]
     }
 
-    func store(_ day: Day) {
+    func store(_ day: Day, scheduled isScheduled: Bool = false) {
         lock.lock(); defer { lock.unlock() }
         let key = day.date.description
-        if storage[key] == nil { order.append(key) }
         storage[key] = day
-        while order.count > limit {
-            let evicted = order.removeFirst()
-            storage[evicted] = nil
+        if isScheduled {
+            scheduled.insert(key)
+            if let index = opened.firstIndex(of: key) { opened.remove(at: index) }
+            return
         }
+        guard !scheduled.contains(key) else { return }
+        if !opened.contains(key) { opened.append(key) }
+        evictOverflow()
+    }
+
+    /// Releases the previously scheduled days, which become ordinary entries and the
+    /// first in line to be evicted once a new schedule has been composed.
+    func clearSchedule() {
+        lock.lock(); defer { lock.unlock() }
+        opened.insert(contentsOf: scheduled.sorted().filter { !opened.contains($0) }, at: 0)
+        scheduled.removeAll()
+        evictOverflow()
     }
 
     func invalidateAll() {
         lock.lock(); defer { lock.unlock() }
         storage.removeAll()
-        order.removeAll()
+        scheduled.removeAll()
+        opened.removeAll()
+    }
+
+    private func evictOverflow() {
+        while opened.count > openedLimit {
+            let evicted = opened.removeFirst()
+            storage[evicted] = nil
+        }
     }
 }
 
@@ -78,6 +92,10 @@ final class LibraryModel {
     /// Attribution lines owed by the labels the composed days carry, taken from the days
     /// themselves so a screen that shows a stored label cannot show it uncredited.
     private(set) var placeAttributions: [String] = []
+    /// Bumped whenever the index is replaced or dropped. Anything derived from PhotoKit
+    /// outside this model - decoded thumbnails above all - belongs to one generation and
+    /// must be released when it ends, because the next one may be allowed to see less.
+    private(set) var libraryGeneration = 0
 
     let tuning = ReconstructionTuningProfile.v1
     private let composer: DayComposer
@@ -93,6 +111,10 @@ final class LibraryModel {
     private var signalsByDate: [LocalDate: DaySignals] = [:]
     private var hasStarted = false
     private var isLoading = false
+    /// A foreground authorisation check that arrived while a load was running. It is the
+    /// only check there is, so it is queued rather than dropped: the running load may be
+    /// building against a grant that has since been narrowed.
+    private var refreshPending = false
     /// What the library looked like when the rows on screen were built, and which day it
     /// was when they were built. Either changing is what makes the work worth redoing.
     private var currentSignature: LibrarySignature?
@@ -139,11 +161,17 @@ final class LibraryModel {
     /// read and two bounded fetches, both off the main actor, so asking each time is
     /// cheaper than being wrong until the next launch.
     func refresh() async {
-        guard hasStarted, !isLoading else { return }
+        guard hasStarted else { return }
+        guard !isLoading else {
+            refreshPending = true
+            return
+        }
         let current = PhotoLibraryAuthorization.current
         hasPlaceCredential = credentials.hasKey
         let changed = current != access
         access = current
+        // A label that only reached memory last time is still owed to the ledger.
+        if await resolver.persistPendingLabels() { placeReport.labelsPersisted = true }
 
         switch current {
         case .notDetermined:
@@ -160,6 +188,8 @@ final class LibraryModel {
     /// Drops everything built from a library rmbr may no longer read.
     private func forgetLibrary() {
         index = nil
+        currentSignature = nil
+        builtForDay = nil
         lifeEntries = []
         monthEntries = []
         signalsByDate = [:]
@@ -168,6 +198,7 @@ final class LibraryModel {
         composedDayCount = 0
         composeSeconds = 0
         cache.invalidateAll()
+        libraryGeneration += 1
     }
 
     func requestAccess() async {
@@ -183,10 +214,23 @@ final class LibraryModel {
     /// A cached snapshot means a warm launch costs a file read. The walk is the cost
     /// that gets reported: it is the first-run number.
     func loadOrBuildIndex(forceRebuild: Bool = false) async {
-        guard !isLoading else { return }
+        guard !isLoading else {
+            refreshPending = true
+            return
+        }
         isLoading = true
-        defer { isLoading = false }
+        await performLoad(forceRebuild: forceRebuild)
+        isLoading = false
 
+        // An authorisation check that arrived mid-load, or a grant that moved under one,
+        // is answered now rather than waiting for the next time the app is reopened.
+        if refreshPending {
+            refreshPending = false
+            await refresh()
+        }
+    }
+
+    private func performLoad(forceRebuild: Bool) async {
         if !forceRebuild {
             // A warm launch costs one file read plus two bounded PhotoKit fetches, and
             // none of it happens on the main actor: a cached launch must not block the
@@ -198,7 +242,11 @@ final class LibraryModel {
                 () -> (CaptureIndexSnapshot, LibrarySignature)? in
                 guard let snapshot = store.load(),
                       snapshot.wasFullAccess == wantsExhaustive else { return nil }
-                return (snapshot, PhotoLibraryIndexer.librarySignature())
+                // Under a limited grant the signature also fingerprints which assets the
+                // grant covers, so swapping one chosen photograph for another is seen.
+                return (snapshot, PhotoLibraryIndexer.librarySignature(
+                    coversWholeLibrary: wantsExhaustive
+                ))
             }.value
 
             if let (snapshot, signature) = warm, signature == snapshot.signature {
@@ -214,6 +262,8 @@ final class LibraryModel {
                 indexBuiltAt = snapshot.builtAt
                 loadedFromCache = true
                 currentSignature = signature
+                cache.invalidateAll()
+                libraryGeneration += 1
                 await finishIndexing()
                 return
             }
@@ -230,9 +280,13 @@ final class LibraryModel {
             }
         }
 
+        let wantsExhaustive = access.isExhaustive
         do {
             let (output, signature) = try await Task.detached(priority: .userInitiated) {
-                (try indexer.buildIndex(progress: progress), PhotoLibraryIndexer.librarySignature())
+                (
+                    try indexer.buildIndex(progress: progress),
+                    PhotoLibraryIndexer.librarySignature(coversWholeLibrary: wantsExhaustive)
+                )
             }.value
             let built = CaptureIndex(records: output.records, timeZone: timeZone)
             index = built
@@ -240,6 +294,7 @@ final class LibraryModel {
             indexBuiltAt = Date()
             currentSignature = signature
             cache.invalidateAll()
+            libraryGeneration += 1
 
             let snapshot = CaptureIndexSnapshot(
                 builtAt: Date(),
@@ -297,6 +352,13 @@ final class LibraryModel {
             tuning: tuning
         )
         await composeBackfill(index: index)
+
+        // Nothing built against a grant that has since changed may be published. The
+        // queued refresh rebuilds against whatever rmbr is allowed to see now.
+        guard PhotoLibraryAuthorization.current == access else {
+            refreshPending = true
+            return
+        }
         builtForDay = today
         phase = .ready
         printReconstructionReport()
@@ -320,12 +382,13 @@ final class LibraryModel {
             return
         }
 
-        cache.reserve(atLeast: dates.count + 64)
+        cache.clearSchedule()
         let composer = composer
         let cache = cache
         let placeLabels = ledger.lookup
         let hasFullAccess = access.isExhaustive
         let timeZone = index.timeZone
+        let generation = libraryGeneration
 
         let outcome = await Task.detached(priority: .userInitiated) { () -> (Double, [String]) in
             let started = Date()
@@ -341,7 +404,7 @@ final class LibraryModel {
                         composedAt: Date()
                     )
                 )
-                cache.store(result.day)
+                cache.store(result.day, scheduled: true)
                 for line in result.day.placeAttributions where !attributions.contains(line) {
                     attributions.append(line)
                 }
@@ -349,6 +412,12 @@ final class LibraryModel {
             return (Date().timeIntervalSince(started), attributions)
         }.value
 
+        // The library moved while this pass ran, so what it composed describes records
+        // rmbr may no longer be allowed to show. It is dropped rather than published.
+        guard libraryGeneration == generation else {
+            cache.invalidateAll()
+            return
+        }
         composedDayCount = dates.count
         composeSeconds = outcome.0
         placeAttributions = outcome.1
@@ -418,11 +487,13 @@ final class LibraryModel {
     /// page's work (RQ-069).
     func summary(for date: LocalDate) -> DayRowSummary {
         let signals = signalsByDate[date]
-        let label = signals?.placeAnchorCentroids.compactMap { ledger.label(near: $0) }.first
+        // The same anchor the composed day would print first, so a month row and the day
+        // it opens can never name two different places.
+        let label = signals?.headlineAnchorCentroid.flatMap { ledger.label(near: $0) }
         return DayRowSummary(
             placeName: label?.text,
-            attribution: label?.attribution,
-            visibleMediaCount: signals?.eligibleMediaCount ?? 0,
+            attributions: label?.attributions ?? [],
+            counts: signals?.rawCounts ?? RawCaptureCounts(),
             placeCount: signals?.distinctPlaceCount ?? 0,
             hasExhaustiveCounts: access.isExhaustive
         )
@@ -456,7 +527,17 @@ final class LibraryModel {
         placeRequestsInFlight.insert(key)
         defer { placeRequestsInFlight.remove(key) }
 
+        let generation = libraryGeneration
         let (updated, report) = await resolver.resolve(result.pendingPlaceLookups)
+        // The library may have been rebuilt or narrowed while the provider was answering.
+        // Recomposing from the index this call started with would put records back that
+        // the new grant may not cover, so the labels are kept and nothing else is.
+        guard libraryGeneration == generation, let current = self.index else {
+            ledger = updated
+            ledgerLabelCount = updated.resolvedCount
+            placeReport = report
+            return
+        }
         ledger = updated
         ledgerLabelCount = updated.resolvedCount
         placeReport = report
@@ -464,7 +545,8 @@ final class LibraryModel {
         // window is rebuilt rather than left to recompose a row at a time while it is
         // being laid out.
         cache.invalidateAll()
-        await composeBackfill(index: index)
+        await composeBackfill(index: current)
+        guard libraryGeneration == generation else { return }
         for line in day(for: date).placeAttributions where !placeAttributions.contains(line) {
             placeAttributions.append(line)
         }

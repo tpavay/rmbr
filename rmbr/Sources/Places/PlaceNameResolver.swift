@@ -35,6 +35,11 @@ actor PlaceNameResolver {
     private var ledger: PlaceLabelLedger
     private var lastRequestAt: Date?
     private var inFlight: Set<String> = []
+    /// Labels held in memory that the ledger on disk does not have yet. The ledger is
+    /// meant to be permanent, so a failed write is remembered and retried rather than
+    /// left for a later lookup that will never come - the coordinate is answered in
+    /// memory, so nothing would ask about it again.
+    private var hasUnsavedChanges = false
 
     init(
         store: PlaceLabelLedgerStore = PlaceLabelLedgerStore(),
@@ -64,6 +69,7 @@ actor PlaceNameResolver {
     ///   coordinates already in the ledger are dropped before any request is made.
     func resolve(_ lookups: [PendingPlaceLookup]) async -> (PlaceLabelLedger, PlaceResolutionReport) {
         var report = PlaceResolutionReport()
+        persistIfNeeded(into: &report)
         guard let apiKey = credentials.read() else {
             report.lastError = "No Geoapify key stored on this device."
             return (ledger, report)
@@ -105,9 +111,11 @@ actor PlaceNameResolver {
             do {
                 if let label = try await geocoder.label(for: coordinate) {
                     ledger.record(.resolved(label), at: coordinate)
+                    hasUnsavedChanges = true
                     report.resolved += 1
                 } else {
                     ledger.record(.unlabelled(attemptedAt: Date()), at: coordinate)
+                    hasUnsavedChanges = true
                     report.unlabelled += 1
                 }
             } catch {
@@ -118,15 +126,38 @@ actor PlaceNameResolver {
             }
         }
 
+        persistIfNeeded(into: &report)
+        return (ledger, report)
+    }
+
+    /// Retries a write the ledger still owes, without asking the provider anything.
+    ///
+    /// A day whose label lives only in memory reads correctly until the app exits and
+    /// then loses the name it froze, and no later lookup would recover it, because the
+    /// coordinate already has an answer in memory. Retrying on its own schedule is what
+    /// closes that gap.
+    @discardableResult
+    func persistPendingLabels() -> Bool {
+        var report = PlaceResolutionReport()
+        persistIfNeeded(into: &report)
+        return report.labelsPersisted
+    }
+
+    private func persistIfNeeded(into report: inout PlaceResolutionReport) {
+        guard hasUnsavedChanges else {
+            report.labelsPersisted = true
+            return
+        }
         do {
             try store.save(ledger)
+            hasUnsavedChanges = false
+            report.labelsPersisted = true
         } catch {
             // The labels stay in memory, so the day still reads correctly now, but the
-            // ledger did not become permanent and the next launch will ask again.
+            // ledger did not become permanent and the write is owed until it succeeds.
             report.labelsPersisted = false
             report.lastError = "Resolved labels could not be written to the ledger."
         }
-        return (ledger, report)
     }
 
     /// Turns a failure into something safe to print.

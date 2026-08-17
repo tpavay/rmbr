@@ -19,6 +19,11 @@ struct RmbrApp: App {
                     guard phase == .active else { return }
                     Task { await model.refresh() }
                 }
+                // A new generation of the index means the grant may now cover less than
+                // the pixels already decoded from the last one.
+                .onChange(of: model.libraryGeneration) { _, _ in
+                    thumbnails.purge()
+                }
         }
     }
 }

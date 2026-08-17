@@ -88,31 +88,23 @@ struct CaptureIndexSnapshot: Sendable, Codable {
 /// outside iCloud backup and can be deleted at any time without losing anything the
 /// person authored.
 struct CaptureIndexStore: Sendable {
-    let fileURL: URL
+    /// Nil when no directory could be confirmed excluded from backup, in which case the
+    /// snapshot is not written: it describes the whole library, and a warm launch is not
+    /// worth a copy of that record leaving the device.
+    let fileURL: URL?
     /// What writing the snapshot cost, kept beside the snapshot rather than inside it: a
     /// figure measured by writing a file cannot also be part of the file it measures.
-    let metricsURL: URL
+    let metricsURL: URL?
 
     init(directory: URL? = nil) {
-        let base = directory ?? Self.defaultDirectory()
-        self.fileURL = base.appendingPathComponent("capture-index.plist")
-        self.metricsURL = base.appendingPathComponent("capture-index-metrics.plist")
-    }
-
-    static func defaultDirectory() -> URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        let directory = support.appendingPathComponent("rmbr", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var excluded = URLResourceValues()
-        excluded.isExcludedFromBackup = true
-        var mutable = directory
-        try? mutable.setResourceValues(excluded)
-        return directory
+        let base = directory.flatMap(PrivateStorage.excluding)
+            ?? (directory == nil ? PrivateStorage.excludedDirectory(named: "rmbr") : nil)
+        self.fileURL = base?.appendingPathComponent("capture-index.plist")
+        self.metricsURL = base?.appendingPathComponent("capture-index-metrics.plist")
     }
 
     func load() -> CaptureIndexSnapshot? {
-        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        guard let fileURL, let data = try? Data(contentsOf: fileURL) else { return nil }
         guard var snapshot = try? PropertyListDecoder().decode(CaptureIndexSnapshot.self, from: data)
         else { return nil }
         guard snapshot.engineVersion == ReconstructionVersion.engine else { return nil }
@@ -130,6 +122,7 @@ struct CaptureIndexStore: Sendable {
     /// the index with the time it actually took.
     @discardableResult
     func save(_ snapshot: CaptureIndexSnapshot) throws -> Double {
+        guard let fileURL else { throw PrivateStorageFailure.notExcludedFromBackup }
         let started = Date()
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
@@ -140,19 +133,19 @@ struct CaptureIndexStore: Sendable {
         var measured = snapshot.metrics
         measured.persistSeconds = elapsed
         let record = CaptureIndexMetricsRecord(builtAt: snapshot.builtAt, metrics: measured)
-        if let recordData = try? encoder.encode(record) {
+        if let metricsURL, let recordData = try? encoder.encode(record) {
             try? recordData.write(to: metricsURL, options: .atomic)
         }
         return elapsed
     }
 
     func clear() {
-        try? FileManager.default.removeItem(at: fileURL)
-        try? FileManager.default.removeItem(at: metricsURL)
+        if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
+        if let metricsURL { try? FileManager.default.removeItem(at: metricsURL) }
     }
 
     private func loadMetrics() -> CaptureIndexMetricsRecord? {
-        guard let data = try? Data(contentsOf: metricsURL) else { return nil }
+        guard let metricsURL, let data = try? Data(contentsOf: metricsURL) else { return nil }
         return try? PropertyListDecoder().decode(CaptureIndexMetricsRecord.self, from: data)
     }
 }

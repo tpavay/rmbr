@@ -14,6 +14,7 @@ struct PlaceNamingTests {
     func containedVenueWins() throws {
         let payload = try response("""
         {"results":[{"name":"POW! Gym","result_type":"amenity","distance":4.2,
+        "categories":["commercial","commercial.gym"],
         "city":"Chicago","suburb":"West Loop",
         "datasource":{"sourcename":"openstreetmap","attribution":"© OpenStreetMap contributors"}}]}
         """)
@@ -24,10 +25,27 @@ struct PlaceNamingTests {
         #expect(label.attribution == "© OpenStreetMap contributors")
     }
 
+    @Test("A named result with no category is an address match, never a place name")
+    func categorylessNameIsNotAVenue() throws {
+        // The live API answers a building or an address with a name and no category, and
+        // reverse geocoding matches the nearest feature - so this name is a precise
+        // claim about a building the person may never have been inside.
+        let payload = try response("""
+        {"results":[{"name":"1035 West Van Buren Street","result_type":"building",
+        "distance":12,"street":"W Van Buren St","housenumber":"1035",
+        "suburb":"West Loop","city":"Chicago"}]}
+        """)
+        let label = try #require(GeoapifyReverseGeocoder.label(from: payload, at: now))
+        #expect(label.text == "West Loop")
+        #expect(label.specificity == .neighbourhood)
+        #expect(label.origin == .providerGeography)
+    }
+
     @Test("A named feature merely near the anchor falls to a coarser tier")
     func distantVenueDoesNotWin() throws {
         let payload = try response("""
         {"results":[{"name":"Some Cafe","result_type":"amenity","distance":140,
+        "categories":["catering","catering.cafe"],
         "suburb":"West Loop","city":"Chicago"}]}
         """)
         let label = try #require(GeoapifyReverseGeocoder.label(from: payload, at: now))
@@ -68,10 +86,35 @@ struct PlaceNamingTests {
     @Test("A missing attribution falls back to the required OpenStreetMap credit")
     func attributionAlwaysPresent() throws {
         let payload = try response("""
-        {"results":[{"name":"Millennium Park","result_type":"amenity","distance":1}]}
+        {"results":[{"name":"Millennium Park","result_type":"building","distance":1,
+        "categories":["leisure","leisure.park"]}]}
         """)
         let label = try #require(GeoapifyReverseGeocoder.label(from: payload, at: now))
+        #expect(label.text == "Millennium Park")
         #expect(label.attribution == OpenStreetMap.attribution)
+        #expect(label.attributions == [OpenStreetMap.attribution])
+    }
+
+    @Test("A label from another datasource still carries the service credit")
+    func nonOpenStreetMapResultKeepsBothCredits() throws {
+        // Geoapify answers from OpenAddresses and Who is On First as well as
+        // OpenStreetMap, and the service credit is owed whichever one answered.
+        let payload = try response("""
+        {"results":[{"suburb":"West Loop","city":"Chicago",
+        "datasource":{"sourcename":"openaddresses","attribution":"OpenAddresses contributors"}}]}
+        """)
+        let label = try #require(GeoapifyReverseGeocoder.label(from: payload, at: now))
+        #expect(label.attributions == [OpenStreetMap.attribution, "OpenAddresses contributors"])
+    }
+
+    @Test("A ledger written before the service credit existed still reads back")
+    func olderStoredLabelGainsTheServiceCredit() throws {
+        let stored = """
+        {"text":"Millennium Park","specificity":"venue","origin":"providerPOI",
+        "provider":"geoapify","attribution":"Who is On First","fetchedAt":0}
+        """
+        let label = try JSONDecoder().decode(ResolvedPlaceLabel.self, from: Data(stored.utf8))
+        #expect(label.attributions == [OpenStreetMap.attribution, "Who is On First"])
     }
 }
 

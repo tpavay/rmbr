@@ -79,12 +79,22 @@ struct GeoapifyReverseGeocoder: Sendable {
 
     /// Applies the naming cascade to one provider response.
     ///
-    /// A raw street address is never the printed label: "at 1101 W Van Buren" is not a
-    /// memory. When nothing above the address tier is supported, the cascade omits the
-    /// place phrase rather than printing coordinates or a house number (RE-033, RQ-044).
+    /// Named point of interest, then neighbourhood, then city, then no place phrase at
+    /// all. There is no building tier and there is never a street address: reverse
+    /// geocoding answers with the nearest feature, so a coordinate on one side of a
+    /// street resolves to the address of a different building - a precise-looking false
+    /// statement about where somebody was, which is the exact class of claim this engine
+    /// exists to refuse (RE-033, RQ-044). Precision comes from a person's own correction,
+    /// not from the geocoder.
+    ///
+    /// A provider name is only a point of interest when the result carries a category.
+    /// `result_type` cannot make that distinction - it reads `building` for a park - so
+    /// the category is the signal, and a named result without one is an address or a
+    /// building match that falls through to the geography tiers.
     static func label(from payload: GeoapifyReverseResponse, at now: Date) -> ResolvedPlaceLabel? {
         guard let result = payload.results.first else { return nil }
-        let attribution = result.datasource?.attribution ?? OpenStreetMap.attribution
+        let attribution = result.datasource?.attribution?.trimmed
+        let datasourceCredit = (attribution?.isEmpty == false ? attribution! : OpenStreetMap.attribution)
 
         func make(_ text: String, _ specificity: PlaceSpecificity, _ origin: PlaceLabelOrigin) -> ResolvedPlaceLabel {
             ResolvedPlaceLabel(
@@ -93,16 +103,17 @@ struct GeoapifyReverseGeocoder: Sendable {
                 origin: origin,
                 confidence: nil,
                 provider: "geoapify",
-                attribution: attribution,
+                attribution: datasourceCredit,
+                serviceAttribution: OpenStreetMap.attribution,
                 fetchedAt: now
             )
         }
 
         let isContained = (result.distance ?? .greatestFiniteMagnitude) <= venueContainmentMetres
+        let isPointOfInterest = !(result.categories ?? []).isEmpty
 
-        if let name = result.name?.trimmed, !name.isEmpty, isContained {
-            let specificity: PlaceSpecificity = result.resultType == "amenity" ? .venue : .building
-            return make(name, specificity, .providerPOI)
+        if let name = result.name?.trimmed, !name.isEmpty, isContained, isPointOfInterest {
+            return make(name, .venue, .providerPOI)
         }
         if let neighbourhood = (result.suburb ?? result.district ?? result.quarter)?.trimmed,
            !neighbourhood.isEmpty {
@@ -140,11 +151,15 @@ struct GeoapifyReverseResponse: Sendable, Codable {
         let formatted: String?
         let distance: Double?
         let resultType: String?
+        /// What kind of feature the provider matched, e.g. `leisure.park`. Present for a
+        /// point of interest and absent for an address or a plain building match, which
+        /// is what makes it the usable venue signal.
+        let categories: [String]?
         let datasource: Datasource?
 
         enum CodingKeys: String, CodingKey {
             case name, street, suburb, district, quarter, city, town, village
-            case state, country, formatted, distance, datasource
+            case state, country, formatted, distance, categories, datasource
             case resultType = "result_type"
         }
     }

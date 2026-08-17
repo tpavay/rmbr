@@ -167,7 +167,7 @@ struct Day: Sendable, Codable, Hashable, Identifiable {
         var seen: [String] = []
         for moment in moments {
             guard let label = moment.place?.label.knownValue else { continue }
-            if !seen.contains(label.attribution) { seen.append(label.attribution) }
+            for line in label.attributions where !seen.contains(line) { seen.append(line) }
         }
         return seen
     }

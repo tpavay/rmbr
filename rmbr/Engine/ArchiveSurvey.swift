@@ -30,7 +30,9 @@ enum ArchiveSurveyor {
         let momentBuilder = MomentBuilder(tuning: tuning)
 
         for date in index.datesWithCaptures {
-            let eligible = index.records(on: date).filter(\.isEligible)
+            let captures = index.records(on: date)
+            let rawCounts = DayComposer.rawCounts(of: captures)
+            let eligible = captures.filter(\.isEligible)
             guard !eligible.isEmpty else {
                 survey.signalsByDate[date] = DaySignals(
                     date: date,
@@ -38,7 +40,8 @@ enum ArchiveSurveyor {
                     favoriteEligibleMediaCount: 0,
                     momentCount: 0,
                     momentsWithMediaCount: 0,
-                    placeAnchorCentroids: []
+                    placeAnchorCentroids: [],
+                    rawCounts: rawCounts
                 )
                 continue
             }
@@ -67,13 +70,22 @@ enum ArchiveSurveyor {
                 survey.places.insert(centroid, on: date)
             }
 
+            // Moments arrive in chronological order, so the first one carrying an anchor
+            // is the place the composed day prints first.
+            let headline = moments
+                .compactMap(\.anchorID)
+                .first
+                .flatMap { places.anchors[$0]?.centroid }
+
             survey.signalsByDate[date] = DaySignals(
                 date: date,
                 eligibleMediaCount: eligible.count,
                 favoriteEligibleMediaCount: eligible.filter(\.isFavorite).count,
                 momentCount: moments.count,
                 momentsWithMediaCount: moments.filter { !$0.captures.isEmpty }.count,
-                placeAnchorCentroids: centroids
+                placeAnchorCentroids: centroids,
+                rawCounts: rawCounts,
+                headlineAnchorCentroid: headline
             )
         }
 

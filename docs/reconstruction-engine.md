@@ -78,6 +78,10 @@ Listing a month composes nothing: its rows are built from the archive survey's p
 
 The place-label ledger is excluded from backup, as the capture index is.
 It holds coordinates the person visited, and re-fetching labels after a restore is a cheaper loss than a copy of that leaving the device.
+Exclusion is a precondition rather than a best effort: the flag is set and read back, and a store whose directory cannot be confirmed excluded refuses to write at all.
+
+Geoapify answers from several datasources - OpenStreetMap, OpenAddresses and Who is On First were all seen in live probes - so a stored label carries two credits: the service credit owed for using Geoapify at all, and the datasource credit owed by that particular result.
+`Day.placeAttributions` returns the deduplicated union, and Life, the month listing and the day page all render it.
 
 ## Deliberate departures
 
@@ -94,8 +98,9 @@ These are the places the implementation and the specifications disagree, and why
 3. **Automatic POI confidence is not the calibrated model.**
    The specification requires 0.85 calibrated confidence with a 0.20 margin over the runner-up.
    That model needs a labelled venue corpus that does not exist, and picking the nearest business by distance is exactly what the naming rules forbid.
-   Until the corpus exists, a provider name is used only when the returned feature is within 25 m of the anchor - effectively containment - and anything further falls to neighbourhood, then city, then no place phrase.
-   A bare street address is never printed.
+   Until the corpus exists, a provider name is used only when the returned feature is within 25 m of the anchor - effectively containment - **and** the result carries a category, which is the provider's only reliable point-of-interest signal: `result_type` reads `building` even for a park.
+   Anything else falls to neighbourhood, then city, then no place phrase.
+   There is no building tier and a street address is never printed (settled 2026-08-17): reverse geocoding answers with the nearest feature, so a coordinate outside 1101 W Van Buren resolves to 1035 West Van Buren Street 28 m away - a precise-looking false statement about where somebody was. Precision comes from a person's own correction, not from the geocoder.
 
 4. **No Vision signals.**
    Aesthetics, `isUtility`, face quality and near-duplicate feature prints are unimplemented.

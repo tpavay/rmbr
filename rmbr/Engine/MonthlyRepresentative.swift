@@ -13,6 +13,14 @@ struct DaySignals: Sendable, Hashable {
     let momentsWithMediaCount: Int
     /// Centroids of the day's confident place anchors.
     let placeAnchorCentroids: [Coordinate]
+    /// What the library held on this day, before any display filtering. Display rules
+    /// exclude screenshots; the factual summary of what the day contained never does, so
+    /// a day of twenty-one screenshots is not a day that held nothing (RE-012, RQ-053).
+    var rawCounts: RawCaptureCounts = RawCaptureCounts()
+    /// The anchor a composed day would name first: the one belonging to the earliest
+    /// moment that has a place. Carried so a month row and the opened day cannot name two
+    /// different places for the same day.
+    var headlineAnchorCentroid: Coordinate?
 
     var distinctPlaceCount: Int { placeAnchorCentroids.count }
 }

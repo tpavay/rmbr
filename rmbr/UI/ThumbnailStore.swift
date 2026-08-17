@@ -26,6 +26,7 @@ final class ThumbnailStore {
     private let assets = NSCache<NSString, PHAsset>()
     private var inFlight: [String: Request] = [:]
     private var preheated: [String: Preheat] = [:]
+    private var preheatWork: [String: Task<Void, Never>] = [:]
 
     /// One PhotoKit request and everybody waiting on it.
     private final class Request {
@@ -87,9 +88,14 @@ final class ThumbnailStore {
     /// replaces its own preheated set without disturbing anybody else's.
     func preheat(_ references: [MediaReference], targetSize: CGSize, window: String) {
         let identifiers = references.map(\.localIdentifier)
-        Task { @MainActor [weak self] in
+        // One update per window at a time, so a screen that scrolled on - or away - can
+        // never have an older resolution finish behind the newer one and start caching a
+        // window nobody is looking at.
+        preheatWork[window]?.cancel()
+        preheatWork[window] = Task { @MainActor [weak self] in
             guard let self else { return }
             let wanted = await self.assets(for: identifiers)
+            guard !Task.isCancelled else { return }
             let previous = self.preheated[window]
             if let previous {
                 let keep = Set(wanted.map(\.localIdentifier))
@@ -118,6 +124,7 @@ final class ThumbnailStore {
     }
 
     func stopPreheating(window: String) {
+        preheatWork.removeValue(forKey: window)?.cancel()
         guard let preheat = preheated.removeValue(forKey: window) else { return }
         manager.stopCachingImages(
             for: preheat.assets,
@@ -125,6 +132,24 @@ final class ThumbnailStore {
             contentMode: .aspectFill,
             options: nil
         )
+    }
+
+    /// Releases everything that came from the library as it was.
+    ///
+    /// Photo access is changed outside rmbr, and a narrowed grant covers assets that are
+    /// still decoded here. Nothing drawn from the old grant survives the change: pending
+    /// requests are cancelled, resolved assets and decoded pixels are dropped, and every
+    /// preheated window is handed back to PhotoKit.
+    func purge() {
+        for key in Array(inFlight.keys) {
+            if let requestID = inFlight[key]?.requestID { manager.cancelImageRequest(requestID) }
+            finish(key)
+        }
+        for work in preheatWork.values { work.cancel() }
+        preheatWork.removeAll()
+        for window in Array(preheated.keys) { stopPreheating(window: window) }
+        images.removeAllObjects()
+        assets.removeAllObjects()
     }
 
     private func begin(

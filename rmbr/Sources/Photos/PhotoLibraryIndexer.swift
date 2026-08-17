@@ -30,6 +30,14 @@ struct IndexRunMetrics: Sendable, Codable, Hashable {
 struct LibrarySignature: Sendable, Codable, Hashable {
     let assetCount: Int
     let newestCreationDate: Date?
+    /// Which assets a limited grant actually covers.
+    ///
+    /// Swapping one chosen photograph for another leaves the count and the newest date
+    /// untouched, so under limited access those two numbers cannot tell that the grant
+    /// now covers a different set. A hash of the chosen identifiers can, and a limited
+    /// selection is small enough to hash. Nil under full access, where the coarse
+    /// signature already describes the whole library.
+    var selectionFingerprint: String?
 }
 
 /// The whole-library metadata index, and the pass that builds it.
@@ -105,7 +113,7 @@ struct PhotoLibraryIndexer: Sendable {
     /// additions, deletions and a changed newest capture; it deliberately does not
     /// catch an edit to an old asset, which the change-observer path this leaves room
     /// for will handle.
-    static func librarySignature() -> LibrarySignature {
+    static func librarySignature(coversWholeLibrary: Bool = true) -> LibrarySignature {
         let options = PHFetchOptions()
         options.includeAssetSourceTypes = [.typeUserLibrary]
         options.includeHiddenAssets = false
@@ -120,9 +128,18 @@ struct PhotoLibraryIndexer: Sendable {
         newestOptions.fetchLimit = 1
         let newest = PHAsset.fetchAssets(with: newestOptions)
 
+        var selectionFingerprint: String?
+        if !coversWholeLibrary {
+            var identifiers: [String] = []
+            identifiers.reserveCapacity(all.count)
+            all.enumerateObjects { asset, _, _ in identifiers.append(asset.localIdentifier) }
+            selectionFingerprint = StableHash.hex(of: identifiers.sorted())
+        }
+
         return LibrarySignature(
             assetCount: all.count,
-            newestCreationDate: newest.count > 0 ? newest.object(at: 0).creationDate : nil
+            newestCreationDate: newest.count > 0 ? newest.object(at: 0).creationDate : nil,
+            selectionFingerprint: selectionFingerprint
         )
     }
 

@@ -109,33 +109,27 @@ struct PlaceLabelLedger: Sendable, Codable {
 /// where a copied ledger costs the promise that nothing about where they went leaves the
 /// device.
 struct PlaceLabelLedgerStore: Sendable {
-    let fileURL: URL
+    /// Nil when no directory could be confirmed excluded from backup. The ledger is then
+    /// not written at all: a coordinate record that a backup could copy off the device is
+    /// worse than one that has to be fetched again.
+    let fileURL: URL?
 
     init(directory: URL? = nil) {
-        let base = directory ?? Self.defaultDirectory()
-        self.fileURL = base.appendingPathComponent("place-labels.json")
-    }
-
-    static func defaultDirectory() -> URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        let directory = support.appendingPathComponent("rmbr-memory", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var excluded = URLResourceValues()
-        excluded.isExcludedFromBackup = true
-        var mutable = directory
-        try? mutable.setResourceValues(excluded)
-        return directory
+        let base = directory.flatMap(PrivateStorage.excluding)
+            ?? (directory == nil ? PrivateStorage.excludedDirectory(named: "rmbr-memory") : nil)
+        self.fileURL = base?.appendingPathComponent("place-labels.json")
     }
 
     func load() -> PlaceLabelLedger {
-        guard let data = try? Data(contentsOf: fileURL),
+        guard let fileURL,
+              let data = try? Data(contentsOf: fileURL),
               let ledger = try? JSONDecoder().decode(PlaceLabelLedger.self, from: data)
         else { return PlaceLabelLedger() }
         return ledger
     }
 
     func save(_ ledger: PlaceLabelLedger) throws {
+        guard let fileURL else { throw PrivateStorageFailure.notExcludedFromBackup }
         let data = try JSONEncoder().encode(ledger)
         try data.write(to: fileURL, options: .atomic)
     }

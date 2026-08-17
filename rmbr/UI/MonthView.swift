@@ -43,8 +43,9 @@ struct MonthView: View {
     private func attributions(for dates: [LocalDate]) -> [String] {
         var lines: [String] = []
         for date in dates {
-            guard let line = model.summary(for: date).attribution else { continue }
-            if !lines.contains(line) { lines.append(line) }
+            for line in model.summary(for: date).attributions where !lines.contains(line) {
+                lines.append(line)
+            }
         }
         return lines
     }
