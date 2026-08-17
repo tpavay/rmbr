@@ -103,26 +103,24 @@ actor PlaceNameResolver {
         guard !pending.isEmpty else { return (ledger, report) }
 
         let geocoder = GeoapifyReverseGeocoder(apiKey: apiKey, session: session)
-        var spent = RequestBudget.spentToday()
 
         for coordinate in pending {
             if Task.isCancelled {
                 report.wasCancelled = true
                 break
             }
-            guard spent < dailyRequestBudget else {
+            guard let slot = reserveRequest() else {
                 report.skippedForBudget += 1
                 continue
             }
-            // The budget is spent only once the wait has completed, so a pass abandoned
-            // while waiting costs the person nothing.
-            guard await throttle() else {
+            // A pass abandoned while waiting costs the person nothing: the credit it had
+            // claimed goes back before it gives up.
+            guard await wait(until: slot) else {
+                releaseReservation()
                 report.wasCancelled = true
                 break
             }
             report.requested += 1
-            spent += 1
-            RequestBudget.recordSpend()
             do {
                 if let label = try await geocoder.label(for: coordinate) {
                     ledger.record(.resolved(label), at: coordinate)
@@ -209,20 +207,38 @@ actor PlaceNameResolver {
     }
 
     /// Waits out the minimum interval, answering whether the wait completed.
-    private func throttle() async -> Bool {
-        guard let last = lastRequestAt else {
-            lastRequestAt = Date()
-            return !Task.isCancelled
-        }
-        let elapsed = Date().timeIntervalSince(last)
-        if elapsed < minimumRequestInterval {
+    /// Claims the next request slot and one credit of the daily budget, or nothing when
+    /// the budget is spent.
+    ///
+    /// This runs to completion without suspending, which is what makes the cap a cap.
+    /// An actor admits another call at every await, so a pass that read the spend count,
+    /// waited, and only then recorded its spend would let a second pass read the same
+    /// count and wake from the same wait - two requests issued together, against a limit
+    /// that was only ever advisory. Claiming both before the wait serialises them.
+    private func reserveRequest() -> Date? {
+        guard RequestBudget.spentToday() < dailyRequestBudget else { return nil }
+        let now = Date()
+        let earliest = lastRequestAt?.addingTimeInterval(minimumRequestInterval) ?? now
+        let slot = max(now, earliest)
+        lastRequestAt = slot
+        RequestBudget.recordSpend()
+        return slot
+    }
+
+    /// Hands back a credit whose request was never made.
+    private func releaseReservation() {
+        RequestBudget.refundSpend()
+    }
+
+    private func wait(until slot: Date) async -> Bool {
+        let delay = slot.timeIntervalSinceNow
+        if delay > 0 {
             do {
-                try await Task.sleep(for: .seconds(minimumRequestInterval - elapsed))
+                try await Task.sleep(for: .seconds(delay))
             } catch {
                 return false
             }
         }
-        lastRequestAt = Date()
         return !Task.isCancelled
     }
 }
@@ -249,6 +265,16 @@ enum RequestBudget {
         let spent = spent(on: stamp, in: defaults)
         defaults.set(stamp, forKey: dateKey)
         defaults.set(spent + 1, forKey: countKey)
+    }
+
+    /// Gives back a credit claimed for a request that was never made.
+    static func refundSpend() {
+        let defaults = UserDefaults.standard
+        let stamp = todayStamp
+        let spent = spent(on: stamp, in: defaults)
+        guard spent > 0 else { return }
+        defaults.set(stamp, forKey: dateKey)
+        defaults.set(spent - 1, forKey: countKey)
     }
 
     private static func spent(on stamp: String, in defaults: UserDefaults) -> Int {

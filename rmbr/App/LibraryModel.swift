@@ -167,6 +167,14 @@ final class LibraryModel {
     /// confirmed to be allowed to read - a reverse-geocode above all, because it sends a
     /// coordinate off the device - is keyed to this rather than to the index itself.
     private(set) var committedRevision = 0
+    /// Bumped when a day already in the cache is composed again.
+    ///
+    /// The day cache sits outside observation on purpose, so composing a day while a row
+    /// is being laid out cannot invalidate the observation that asked for it. That leaves
+    /// a screen no way to learn that the day it is already showing has been replaced -
+    /// which is exactly what happens when a place name arrives - so the replacement is
+    /// announced here, and reading a day registers a dependency on it.
+    private(set) var cacheRevision = 0
 
     /// Owned rather than observed, so that dropping the library and dropping the pixels
     /// drawn from it are one operation and cannot be separated by a suspension point.
@@ -624,6 +632,7 @@ final class LibraryModel {
 
             cache.clearSchedule()
             for day in outcome.0 { cache.store(day, scheduled: true) }
+            cacheRevision += 1
             composedDayCount = dates.count
             composeSeconds = outcome.1
             placeAttributions = outcome.2
@@ -671,6 +680,7 @@ final class LibraryModel {
     /// Pure and synchronous: safe to call while laying out a row. Place names are not
     /// fetched here - a day is readable before it is named.
     func day(for date: LocalDate) -> Day {
+        _ = cacheRevision
         if let cached = cache.day(date) { return cached }
         let records = index?.records(on: date) ?? []
         let result = composer.compose(
@@ -843,12 +853,15 @@ final class LibraryModel {
             // against the newer one rather than being abandoned: they are already answered
             // for good, so no later lookup would ever put their labels on a day.
             guard ledgerRevision == revision else { continue }
+            var replaced = false
             for day in refreshed where cache.contains(day.date) {
                 cache.store(day, scheduled: cache.isScheduled(day.date))
                 // A stored label may never be shown without the credits it owes, whatever
                 // path put it on screen.
                 mergeAttributions(from: day)
+                replaced = true
             }
+            if replaced { cacheRevision += 1 }
             pendingRefreshCoordinates.removeFirst(coordinates.count)
         }
     }
