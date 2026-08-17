@@ -108,6 +108,10 @@ final class LibraryModel {
     /// must be released when it ends, because the next one may be allowed to see less.
     private(set) var libraryGeneration = 0
 
+    /// Owned rather than observed, so that dropping the library and dropping the pixels
+    /// drawn from it are one operation and cannot be separated by a suspension point.
+    let thumbnails = ThumbnailStore()
+
     let tuning = ReconstructionTuningProfile.v1
     private let composer: DayComposer
     private let indexStore = CaptureIndexStore()
@@ -117,6 +121,10 @@ final class LibraryModel {
 
     private var index: CaptureIndex?
     private var ledger = PlaceLabelLedger()
+    /// Bumped whenever the ledger is replaced. A composition carries the labels the
+    /// ledger held when it started, so a pass that ran across a newer answer describes
+    /// names that have since been superseded and must not be committed over them.
+    private var ledgerRevision = 0
     private var representativeDates: Set<LocalDate> = []
     private var placeRequestsInFlight: Set<String> = []
     private var signalsByDate: [LocalDate: DaySignals] = [:]
@@ -151,8 +159,7 @@ final class LibraryModel {
         hasStarted = true
         access = PhotoLibraryAuthorization.current
         hasPlaceCredential = credentials.hasKey
-        ledger = await resolver.currentLedger
-        ledgerLabelCount = ledger.resolvedCount
+        adoptLedger(await resolver.currentLedger)
 
         switch access {
         case .notDetermined:
@@ -173,22 +180,27 @@ final class LibraryModel {
     /// cheaper than being wrong until the next launch.
     func refresh() async {
         guard hasStarted else { return }
-        guard !isLoading else {
-            refreshPending = true
-            return
-        }
+
+        // Read and act on the grant before anything suspends, and before the busy check:
+        // a load already running is the case that most needs the old library taken down,
+        // because it is the case that leaves it on screen the longest. Full to limited
+        // narrows what may be shown, and limited to full changes what every count means; a
+        // limited grant can also be re-chosen without the enum moving at all, and finding
+        // that out means reading the new selection, which must not happen while
+        // photographs the person may have just revoked are still visible.
         let current = PhotoLibraryAuthorization.current
         hasPlaceCredential = credentials.hasKey
         let changed = current != access
         access = current
+        if changed || current == .limited { invalidateLibrary() }
 
-        // Before anything that suspends. A grant that narrowed narrowed now, and an actor
-        // hop or a disk write is long enough for the old library to still be on screen.
-        // Full to limited narrows what may be shown, and limited to full changes what
-        // every count means; a limited grant can also be re-chosen without the enum moving
-        // at all, and finding that out means reading the new selection, which must not
-        // happen while photographs the person may have just revoked are still visible.
-        if changed || current == .limited { forgetLibrary() }
+        // A load in flight was built against the grant that has just gone. It reads the
+        // generation at each of its own suspension points and publishes nothing once this
+        // one has moved, so the queued pass is what indexes whatever rmbr may see now.
+        guard !isLoading else {
+            refreshPending = true
+            return
+        }
 
         // A label that only reached memory last time is still owed to the ledger.
         if await resolver.persistPendingLabels() { placeReport.labelsPersisted = true }
@@ -203,8 +215,21 @@ final class LibraryModel {
         }
     }
 
-    /// Drops everything built from a library rmbr may no longer read.
-    private func forgetLibrary() {
+    /// Drops everything built from the library as rmbr was allowed to see it.
+    ///
+    /// The single invalidation in the app, and synchronous on purpose. Photo access is
+    /// changed outside rmbr, so every entry point - a foreground check on the idle path or
+    /// over a running load, an authorisation change, a re-chosen limited selection, a
+    /// rebuild from the diagnostics sheet - comes through here, and it runs to completion
+    /// before the next suspension point. Anything spread across an actor hop or a SwiftUI
+    /// callback, which cannot run until the main actor yields, leaves photographs from a
+    /// grant that no longer exists on screen in the meantime.
+    ///
+    /// One generation ends here and everything derived from it goes with it: the index and
+    /// the rows and signals built from it, the composed days, and every pixel, resolved
+    /// asset, in-flight request and preheated window the thumbnail store still holds.
+    private func invalidateLibrary() {
+        libraryGeneration += 1
         index = nil
         currentSignature = nil
         builtForDay = nil
@@ -216,7 +241,11 @@ final class LibraryModel {
         composedDayCount = 0
         composeSeconds = 0
         cache.invalidateAll()
-        libraryGeneration += 1
+        thumbnails.purge()
+        // There is nothing left to draw a day from, and staying ready over that would
+        // print an empty life - a claim that the library is empty rather than that rmbr is
+        // reading it again. The surface says so until a reconstruction commits.
+        phase = .checkingPermission
     }
 
     func requestAccess() async {
@@ -259,6 +288,7 @@ final class LibraryModel {
             // only when the library has actually moved.
             let store = indexStore
             let wantsExhaustive = access.isExhaustive
+            let generation = libraryGeneration
             let warm = await Task.detached(priority: .userInitiated) {
                 () -> (CaptureIndexSnapshot, LibrarySignature)? in
                 guard let snapshot = store.load(),
@@ -270,6 +300,13 @@ final class LibraryModel {
                 ))
             }.value
 
+            // A grant that moved while the snapshot was being read took the library this
+            // was resolving down with it, so none of it describes what rmbr may see now.
+            guard libraryGeneration == generation else {
+                refreshPending = true
+                return
+            }
+
             if let (snapshot, signature) = warm, signature == snapshot.signature {
                 // Coming back to the foreground with the same library, on the same day,
                 // has nothing to redo: the survey and the composed window still describe
@@ -278,25 +315,28 @@ final class LibraryModel {
                    phase == .ready {
                     return
                 }
+                // Installed into an emptied model, in one main-actor turn: nothing from
+                // the previous generation is still being served when this one starts.
+                invalidateLibrary()
                 index = snapshot.index
                 metrics = snapshot.metrics
                 indexBuiltAt = snapshot.builtAt
                 loadedFromCache = true
                 currentSignature = signature
-                cache.invalidateAll()
-                libraryGeneration += 1
                 await finishIndexing()
                 return
             }
         }
 
         // Reaching here means no cached snapshot describes what rmbr may currently see -
-        // the grant narrowed, the selection changed, or the library moved. Whatever was
-        // built from the old one stops being served now, not when the rebuild lands.
-        if index != nil { forgetLibrary() }
+        // the grant narrowed, the selection changed, the library moved, or a rebuild was
+        // asked for. Whatever was built from the old one stops being served now, not when
+        // the rebuild lands.
+        invalidateLibrary()
 
         loadedFromCache = false
         phase = .indexing(done: 0, total: 0)
+        let generation = libraryGeneration
 
         let timeZone = TimeZone.current
         let indexer = PhotoLibraryIndexer(timeZone: timeZone)
@@ -324,9 +364,9 @@ final class LibraryModel {
                 return (output, after)
             }.value
 
-            guard let (output, signature) = walked else {
-                // The library changed under the walk. Nothing from it is published, and
-                // the queued pass indexes what the grant covers now.
+            // The library changed under the walk, or the grant went while it ran. Nothing
+            // from it is published, and the queued pass indexes what the grant covers now.
+            guard let (output, signature) = walked, libraryGeneration == generation else {
                 refreshPending = true
                 return
             }
@@ -335,8 +375,8 @@ final class LibraryModel {
             metrics = output.metrics
             indexBuiltAt = Date()
             currentSignature = signature
+            // Anything composed while the walk ran was composed against no index at all.
             cache.invalidateAll()
-            libraryGeneration += 1
 
             let snapshot = CaptureIndexSnapshot(
                 builtAt: Date(),
@@ -371,9 +411,16 @@ final class LibraryModel {
         }
         let tuning = tuning
         let today = today
+        let generation = libraryGeneration
         let survey = await Task.detached(priority: .userInitiated) {
             ArchiveSurveyor.survey(index: index, tuning: tuning)
         }.value
+        // The grant went while the archive was being surveyed, so these rows describe a
+        // library rmbr is no longer allowed to read. None of them reaches the surface.
+        guard libraryGeneration == generation else {
+            refreshPending = true
+            return
+        }
         surveySeconds = survey.elapsedSeconds
         signalsByDate = survey.signalsByDate
         monthEntries = ArchiveSurveyor.monthEntries(
@@ -404,6 +451,7 @@ final class LibraryModel {
             PhotoLibraryIndexer.librarySignature(coversWholeLibrary: wantsExhaustive)
         }.value
         guard !refreshPending,
+              libraryGeneration == generation,
               PhotoLibraryAuthorization.current == access,
               latestSignature == currentSignature else {
             // The queued refresh rebuilds against whatever rmbr is allowed to see now.
@@ -596,8 +644,7 @@ final class LibraryModel {
 
         let generation = libraryGeneration
         let (updated, report) = await resolver.resolve(result.pendingPlaceLookups)
-        ledger = updated
-        ledgerLabelCount = updated.resolvedCount
+        adoptLedger(updated)
         placeReport = report
 
         let answered = result.pendingPlaceLookups.map(\.coordinate)
@@ -636,44 +683,61 @@ final class LibraryModel {
         let composer = composer
         let cache = cache
         let signals = signalsByDate
-        let placeLabels = ledger.lookup
         let hasFullAccess = access.isExhaustive
         let timeZone = index.timeZone
-        let generation = libraryGeneration
 
-        // A frequently visited anchor is the place of hundreds of days, so finding them
-        // and composing them again happens away from the main actor and is committed only
-        // once the library is confirmed to be the one they were composed against.
-        let refreshed = await Task.detached(priority: .userInitiated) { () -> [Day] in
-            let named = signals.compactMap { date, signals -> LocalDate? in
-                let touched = signals.chronologicalAnchorCentroids.contains { centroid in
-                    coordinates.contains {
-                        $0.distance(to: centroid) <= PlaceLabelLedger.matchDistanceMetres
+        // A day page open beside this one can answer its own coordinates while this pass
+        // runs, and committing over that would put a name back that the ledger has since
+        // improved on. The composition is redone against the ledger as it is now rather
+        // than dropped, because the label it carries would otherwise never be shown.
+        for _ in 0..<3 {
+            let generation = libraryGeneration
+            let revision = ledgerRevision
+            let placeLabels = ledger.lookup
+
+            // A frequently visited anchor is the place of hundreds of days, so finding
+            // them and composing them again happens away from the main actor and is
+            // committed only once the library and the ledger are confirmed to be the ones
+            // they were composed against.
+            let refreshed = await Task.detached(priority: .userInitiated) { () -> [Day] in
+                let named = signals.compactMap { date, signals -> LocalDate? in
+                    let touched = signals.chronologicalAnchorCentroids.contains { centroid in
+                        coordinates.contains {
+                            $0.distance(to: centroid) <= PlaceLabelLedger.matchDistanceMetres
+                        }
                     }
+                    return touched && cache.contains(date) ? date : nil
                 }
-                return touched && cache.contains(date) ? date : nil
-            }
-            return named.map { date in
-                composer.compose(
-                    date: date,
-                    captures: index.records(on: date),
-                    context: DayComposer.Context(
-                        timeZone: timeZone,
-                        hasFullLibraryAccess: hasFullAccess,
-                        placeLabels: placeLabels,
-                        composedAt: Date()
-                    )
-                ).day
-            }
-        }.value
+                return named.map { date in
+                    composer.compose(
+                        date: date,
+                        captures: index.records(on: date),
+                        context: DayComposer.Context(
+                            timeZone: timeZone,
+                            hasFullLibraryAccess: hasFullAccess,
+                            placeLabels: placeLabels,
+                            composedAt: Date()
+                        )
+                    ).day
+                }
+            }.value
 
-        guard libraryGeneration == generation else { return }
-        for day in refreshed where cache.contains(day.date) {
-            cache.store(day, scheduled: cache.isScheduled(day.date))
-            // A stored label may never be shown without the credits it owes, whatever
-            // path put it on screen.
-            mergeAttributions(from: day)
+            guard libraryGeneration == generation else { return }
+            guard ledgerRevision == revision else { continue }
+            for day in refreshed where cache.contains(day.date) {
+                cache.store(day, scheduled: cache.isScheduled(day.date))
+                // A stored label may never be shown without the credits it owes, whatever
+                // path put it on screen.
+                mergeAttributions(from: day)
+            }
+            return
         }
+    }
+
+    private func adoptLedger(_ updated: PlaceLabelLedger) {
+        ledger = updated
+        ledgerRevision += 1
+        ledgerLabelCount = updated.resolvedCount
     }
 
     private func mergeAttributions(from day: Day) {

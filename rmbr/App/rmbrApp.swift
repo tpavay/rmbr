@@ -4,13 +4,15 @@ import SwiftUI
 struct RmbrApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var model = LibraryModel()
-    @State private var thumbnails = ThumbnailStore()
 
     var body: some Scene {
         WindowGroup {
             LifeView()
                 .environment(model)
-                .environment(thumbnails)
+                // The model owns the thumbnail store, so a narrowed grant drops the index
+                // and the pixels drawn from it in one go. Releasing them from a SwiftUI
+                // callback here would be a turn of the main actor too late.
+                .environment(model.thumbnails)
                 .preferredColorScheme(.dark)
                 .task { await model.start() }
                 // Photo access is granted, narrowed and revoked in Settings, so what
@@ -18,11 +20,6 @@ struct RmbrApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     guard phase == .active else { return }
                     Task { await model.refresh() }
-                }
-                // A new generation of the index means the grant may now cover less than
-                // the pixels already decoded from the last one.
-                .onChange(of: model.libraryGeneration) { _, _ in
-                    thumbnails.purge()
                 }
         }
     }

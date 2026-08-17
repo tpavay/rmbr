@@ -30,7 +30,10 @@ struct DayPageView: View {
         }
         .background(Palette.deepInk.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: date.description) {
+        // The generation is part of the identity: a lookup issued against a library that
+        // has since been dropped would compose this day from records the grant may no
+        // longer cover, so it is restarted against the one that exists now.
+        .task(id: "\(model.libraryGeneration):\(date.description)") {
             await model.resolvePlaceNames(for: date)
         }
         .onAppear { preheat(day) }
