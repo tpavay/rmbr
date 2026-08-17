@@ -181,24 +181,24 @@ final class LibraryModel {
         hasPlaceCredential = credentials.hasKey
         let changed = current != access
         access = current
+
+        // Before anything that suspends. A grant that narrowed narrowed now, and an actor
+        // hop or a disk write is long enough for the old library to still be on screen.
+        // Full to limited narrows what may be shown, and limited to full changes what
+        // every count means; a limited grant can also be re-chosen without the enum moving
+        // at all, and finding that out means reading the new selection, which must not
+        // happen while photographs the person may have just revoked are still visible.
+        if changed || current == .limited { forgetLibrary() }
+
         // A label that only reached memory last time is still owed to the ledger.
         if await resolver.persistPendingLabels() { placeReport.labelsPersisted = true }
 
         switch current {
         case .notDetermined:
-            if changed { forgetLibrary() }
             phase = .awaitingPermission
         case .denied, .restricted:
-            if changed { forgetLibrary() }
             phase = .permissionRefused(current)
         case .full, .limited:
-            // Full to limited narrows what may be shown, and limited to full changes what
-            // every count means. Neither may keep serving the old index and the pixels
-            // decoded from it while the replacement is being built. A limited grant can
-            // also be re-chosen without the enum moving at all, and finding that out means
-            // reading the new selection - which must not happen while photographs the
-            // person may have just revoked are still on screen.
-            if changed || current == .limited { forgetLibrary() }
             await loadOrBuildIndex()
         }
     }
@@ -601,27 +601,25 @@ final class LibraryModel {
         placeReport = report
 
         let answered = result.pendingPlaceLookups.map(\.coordinate)
+        let landed = report.resolved > 0 || report.unlabelled > 0
+        // The library may have been rebuilt or narrowed while the provider was answering,
+        // or the person may have left the day. Either way the full window rebuild below is
+        // not run - but what did land is still carried into every day it names, against
+        // whichever index is current now, because the coordinate is answered and nothing
+        // would ever ask about it again.
+        let stillWanted = !report.wasCancelled && !Task.isCancelled
+            && libraryGeneration == generation
 
-        // Two reasons to stop short of rebuilding the window. The library may have been
-        // rebuilt or narrowed while the provider was answering, in which case recomposing
-        // from the index this call started with would put back records the new grant may
-        // not cover. Or the person left the day, in which case a full recomposition is
-        // work nobody is waiting for. What did land is still carried into every day it
-        // names, because the coordinate is answered now and nothing would ask again.
-        guard !report.wasCancelled, !Task.isCancelled else {
-            if report.resolved > 0 || report.unlabelled > 0,
-               libraryGeneration == generation, let current = self.index {
-                refreshDays(near: answered, index: current)
-            }
-            return
-        }
-        guard libraryGeneration == generation, let current = self.index else { return }
-
+        guard let current = self.index else { return }
         // Days these coordinates name are brought up to date first, so a scheduled row is
         // replaced in place rather than dropped: the composed window stays whole until the
         // rebuild below can commit its replacement, and a rebuild that gets cancelled
         // cannot leave Life composing a row while it is being laid out.
-        refreshDays(near: answered, index: current)
+        if landed { await refreshDays(near: answered, index: current) }
+        guard stillWanted, libraryGeneration == generation, let current = self.index else {
+            return
+        }
+
         await composeBackfill(index: current)
         guard libraryGeneration == generation else { return }
         mergeAttributions(from: day(for: date))
@@ -633,31 +631,48 @@ final class LibraryModel {
     /// label would keep that composition forever: the ledger answers the coordinate now,
     /// so no later composition would ask for it again. A scheduled day is replaced in
     /// place, which is what keeps the composed window whole.
-    private func refreshDays(near coordinates: [Coordinate], index: CaptureIndex) {
+    private func refreshDays(near coordinates: [Coordinate], index: CaptureIndex) async {
         guard !coordinates.isEmpty else { return }
-        let named = signalsByDate.compactMap { date, signals -> LocalDate? in
-            let touched = signals.chronologicalAnchorCentroids.contains { centroid in
-                coordinates.contains {
-                    $0.distance(to: centroid) <= PlaceLabelLedger.matchDistanceMetres
+        let composer = composer
+        let cache = cache
+        let signals = signalsByDate
+        let placeLabels = ledger.lookup
+        let hasFullAccess = access.isExhaustive
+        let timeZone = index.timeZone
+        let generation = libraryGeneration
+
+        // A frequently visited anchor is the place of hundreds of days, so finding them
+        // and composing them again happens away from the main actor and is committed only
+        // once the library is confirmed to be the one they were composed against.
+        let refreshed = await Task.detached(priority: .userInitiated) { () -> [Day] in
+            let named = signals.compactMap { date, signals -> LocalDate? in
+                let touched = signals.chronologicalAnchorCentroids.contains { centroid in
+                    coordinates.contains {
+                        $0.distance(to: centroid) <= PlaceLabelLedger.matchDistanceMetres
+                    }
                 }
+                return touched && cache.contains(date) ? date : nil
             }
-            return touched && cache.contains(date) ? date : nil
-        }
-        for date in named {
-            let result = composer.compose(
-                date: date,
-                captures: index.records(on: date),
-                context: DayComposer.Context(
-                    timeZone: index.timeZone,
-                    hasFullLibraryAccess: access.isExhaustive,
-                    placeLabels: ledger.lookup,
-                    composedAt: Date()
-                )
-            )
-            cache.store(result.day, scheduled: cache.isScheduled(date))
+            return named.map { date in
+                composer.compose(
+                    date: date,
+                    captures: index.records(on: date),
+                    context: DayComposer.Context(
+                        timeZone: timeZone,
+                        hasFullLibraryAccess: hasFullAccess,
+                        placeLabels: placeLabels,
+                        composedAt: Date()
+                    )
+                ).day
+            }
+        }.value
+
+        guard libraryGeneration == generation else { return }
+        for day in refreshed where cache.contains(day.date) {
+            cache.store(day, scheduled: cache.isScheduled(day.date))
             // A stored label may never be shown without the credits it owes, whatever
             // path put it on screen.
-            mergeAttributions(from: result.day)
+            mergeAttributions(from: day)
         }
     }
 

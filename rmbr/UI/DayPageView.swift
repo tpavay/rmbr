@@ -35,6 +35,9 @@ struct DayPageView: View {
         }
         .onAppear { preheat(day) }
         .onDisappear { thumbnails.stopPreheating(window: preheatWindow) }
+        // A viewer left open over a library that has just been narrowed is showing
+        // photographs from a grant that no longer exists.
+        .onChange(of: thumbnails.generation) { _, _ in viewerMediaID = nil }
         .sheet(item: $viewerMediaID) { mediaID in
             MediaViewer(day: day, startAt: mediaID)
         }

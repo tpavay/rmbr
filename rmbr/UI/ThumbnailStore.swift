@@ -28,8 +28,9 @@ final class ThumbnailStore {
     private var preheated: [String: Preheat] = [:]
     private var preheatWork: [String: Task<Void, Never>] = [:]
     /// Bumped by every purge. A fetch issued before one describes a grant that has since
-    /// been narrowed, so its answer is discarded rather than allowed back into the cache.
-    private var generation = 0
+    /// been narrowed, so its answer is discarded rather than allowed back into the cache,
+    /// and a view holding delivered pixels of its own reads this to know they are stale.
+    private(set) var generation = 0
 
     /// One PhotoKit request and everybody waiting on it.
     @MainActor
@@ -342,7 +343,10 @@ struct MediaThumbnail: View {
                 }
             }
             .clipped()
-            .task(id: reference.localIdentifier) {
+            // The purge generation is part of the identity: pixels already delivered into
+            // this view belong to the grant that was current when they arrived, so a purge
+            // has to drop them here as well as in the store.
+            .task(id: "\(store.generation):\(reference.localIdentifier)") {
                 image = store.cachedImage(for: reference, targetSize: targetSize)
                 for await delivered in store.deliveries(
                     for: reference,
