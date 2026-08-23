@@ -161,8 +161,8 @@ struct MonthView: View {
             )
             Spacer(minLength: 0)
             wall(
-                heading: firstPhotographHeading,
-                detail: "Your life on this phone begins here."
+                heading: "First photograph",
+                detail: firstPhotographDate
             )
         }
         .padding(.top, Self.chromeHeight)
@@ -170,10 +170,13 @@ struct MonthView: View {
         .accessibilityHidden(true)
     }
 
-    private var firstPhotographHeading: String {
-        guard let earliest = model.earliestIndexedDate else { return "No photographs yet" }
-        return "First photograph, "
-            + DayFormatting.heading(for: earliest, today: model.today).lowercased()
+    /// The date itself rather than a sentence about it: a life starts on a day, and the
+    /// wall is narrow enough that the day is the only thing worth saying.
+    private var firstPhotographDate: String {
+        guard let earliest = model.earliestIndexedDate else {
+            return "Nothing indexed yet."
+        }
+        return DayFormatting.heading(for: earliest, today: model.today)
     }
 
     private func wall(heading: String, detail: String) -> some View {
