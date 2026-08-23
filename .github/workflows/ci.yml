@@ -37,7 +37,7 @@ jobs:
     # macos-26 arm64, pinned rather than macos-latest so the OS cannot change
     # underneath the project without someone choosing it.
     runs-on: macos-26
-    # A healthy run is about two minutes. This bound exists only so a wedged
+    # A healthy run is three to five minutes. This bound exists only so a wedged
     # simulator cannot quietly burn hours at the macOS rate of $0.062/minute.
     timeout-minutes: 20
 
@@ -63,8 +63,8 @@ jobs:
             -derivedDataPath DerivedData \
             | xcbeautify --renderer github-actions
 
-      # Only now is booting a simulator worth paying for. The suite itself runs
-      # in well under a second; nearly all of this step is the boot.
+      # Only now is booting a simulator worth paying for. About two thirds of
+      # this step is the device coming up before the first test even runs.
       - name: Test
         run: |
           set -o pipefail

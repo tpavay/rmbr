@@ -47,25 +47,29 @@ If a future image drops Xcode 26.3, `xcode-select` fails on the spot with a legi
 
 Build, then test. Never the single fused `xcodebuild test`.
 
-Measured on this pipeline's own first two runs:
+Measured on this pipeline's own first three runs:
 
-| | green run | red run, one syntax error |
-| --- | --- | --- |
-| Select Xcode | under 1s | under 1s |
-| Build | 22s | 22s, failed |
-| Test | 129s | skipped, no simulator booted |
-| **Job total** | **2m 38s** | **28s** |
+| | green | green | red, one syntax error |
+| --- | --- | --- | --- |
+| Build | 22s | 55s | 22s, failed |
+| Test | 129s | 202s | skipped, no simulator booted |
+| **Job total** | **2m 38s** | **4m 29s** | **28s** |
 
-A simulator boot is the most expensive and least interesting thing in the run.
-In the green run the test step took 129 seconds, of which roughly 86 passed before the first
-test executed at all: creating the device, booting it, installing the app, launching the test
-host.
+The two green runs did identical work on identical commits, so the gap between them is runner
+variance and nothing else.
+Plan on three to five billed minutes for a green run, not on the lucky one.
+
+A simulator boot is the most expensive and least interesting thing in either of them.
+In the faster green run the test step took 129 seconds, of which roughly 86 passed before the
+first test executed at all: creating the device, booting it, installing the app, launching the
+test host.
 Executing all 88 tests took about 35 seconds on the runner, against 0.85 seconds on an
 M-series laptop.
 
 Splitting build from test is what makes the red column of that table possible.
 A change that does not parse, does not type-check, or violates Swift 6 concurrency is rejected
-in 28 seconds rather than 158, and no simulator is ever booted on its behalf.
+in under half a minute rather than after three to five, and no simulator is ever booted on its
+behalf.
 
 That is also the honest answer to "make the cheapest thing that can fail, fail first."
 For this repository the compile *is* the cheapest thing that can fail, and there is nothing
@@ -83,8 +87,8 @@ and each job is rounded up to a whole minute.
 Included allowance is 2,000 minutes a month on GitHub Free and 3,000 on Pro, and standard
 runners are free in public repositories.
 
-So a green run occupies the runner for 2 minutes 38 seconds, bills 3 minutes, and costs about
-**$0.19**.
+So a green run bills 3 to 5 minutes depending on how the runner feels that morning, and costs
+between about **$0.19 and $0.31**.
 A run rejected at the build step bills 1 minute and costs about **$0.06**.
 The same work on a laptop is 6.9 seconds to build and 17.7 seconds to test; the runner is
 several times slower per unit of work and pays about 86 seconds of simulator startup that a
@@ -96,7 +100,7 @@ Three things keep that number from growing:
   pays for one run, not three. It is deliberately *not* applied to `main`, because with no
   branch protection available on this plan (see below) the `main` run is the only thing that
   reports whether `main` is green, and superseding it would throw that away.
-- **`timeout-minutes: 20`.** A healthy run is under three minutes. The default job timeout is
+- **`timeout-minutes: 20`.** A healthy run is under five minutes. The default job timeout is
   six hours, which at the macOS rate is about $22 for one wedged simulator. This bound is a
   cost control, not a performance target.
 - **No larger runners.** Included minutes cannot be spent on them at all, and they are billed
@@ -107,7 +111,8 @@ Three things keep that number from growing:
 A workflow that has only ever gone green has not been tested. Both of these ran on the pull
 request that introduced this file:
 
-- **Green.** Run `32649998989`: 2m 38s, 88 tests in 15 suites passed.
+- **Green.** Runs `32649998989` and `32650746516`: 2m 38s and 4m 29s, 88 tests in 15 suites
+  passed in both.
 - **Red.** Run `32650222909`: a one-line syntax error pushed deliberately. The build step
   failed after 22 seconds, the test step was **skipped**, the whole job took 28 seconds, and
   `xcbeautify --renderer github-actions` annotated the offending line inline in the diff with
