@@ -18,6 +18,15 @@ enum Palette {
     static let smokedGlass = Color.white.opacity(0.07)
 }
 
+extension Animation {
+    /// The one spring.
+    ///
+    /// Every movement in rmbr is this and nothing else - the film advancing a frame, a
+    /// month arriving, the mosaic changing altitude. A second spring would make two
+    /// screens feel like two products, so this is the only place the numbers appear.
+    static let rmbr = Animation.spring(response: 0.42, dampingFraction: 0.86)
+}
+
 extension Font {
     /// The editorial voice. Never below 13 points, where it stops being elegant.
     static func editorial(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {

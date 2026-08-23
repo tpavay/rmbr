@@ -148,6 +148,8 @@ final class LibraryModel {
     private(set) var indexBuiltAt: Date?
     private(set) var loadedFromCache = false
     private(set) var monthEntries: [MonthEntry] = []
+    /// Every month the mosaic may page to, newest first. See `MonthBrowsing.months`.
+    private(set) var browsableMonths: [Month] = []
     private(set) var placeReport = PlaceResolutionReport()
     private(set) var hasPlaceCredential = false
     private(set) var ledgerLabelCount = 0
@@ -205,6 +207,8 @@ final class LibraryModel {
     /// a later generation's coordinates with nobody to drain them.
     private var refreshWorkerGeneration: Int?
     private var signalsByDate: [LocalDate: DaySignals] = [:]
+    /// Days with captures by month ordinal, so the years plate costs a lookup per tile.
+    private var densityByMonth: [Int: Set<Int>] = [:]
     private var hasStarted = false
     private var isLoading = false
     /// A foreground authorisation check that arrived while a load was running. It is the
@@ -327,6 +331,8 @@ final class LibraryModel {
         builtForDay = nil
         lifeEntries = []
         monthEntries = []
+        browsableMonths = []
+        densityByMonth = [:]
         signalsByDate = [:]
         placeAttributions = []
         composedDayCount = 0
@@ -528,6 +534,11 @@ final class LibraryModel {
             today: today,
             tuning: tuning
         )
+        browsableMonths = MonthBrowsing.months(
+            earliestIndexedDate: index.earliestDate,
+            today: today
+        )
+        densityByMonth = MonthBrowsing.density(of: index.datesWithCaptures)
         await composeBackfill(index: index)
 
         // Nothing built against a grant that has since changed may be published, and the
@@ -918,6 +929,29 @@ final class LibraryModel {
         )
         guard last >= 1 else { return [] }
         return (1...last).map { LocalDate(year: month.year, month: month.month, day: $0) }
+    }
+
+    /// How full a month is, for a tile that is too small to draw a photograph.
+    ///
+    /// Answers for any month, including one outside the browsable range, so a plate can
+    /// draw a whole year without first asking which of its months exist.
+    func density(for month: Month) -> MonthDensity {
+        MonthDensity(
+            month: month,
+            days: LifeEntryBuilder.daysIn(month),
+            daysWithCaptures: densityByMonth[month.ordinal] ?? []
+        )
+    }
+
+    /// Every year the plate draws, newest first.
+    var browsableYears: [Int] { MonthBrowsing.years(of: browsableMonths) }
+
+    /// Whether a month is one a person may open. The plate dims the rest.
+    func isBrowsable(_ month: Month) -> Bool {
+        guard let newest = browsableMonths.first, let oldest = browsableMonths.last else {
+            return false
+        }
+        return month <= newest && month >= oldest
     }
 
     func representative(for month: Month) -> MonthlyRepresentative? {

@@ -22,6 +22,9 @@ enum DayFormatting {
 
     private static let monthFormatter = formatter(dateFormat: "MMMM yyyy")
 
+    /// The narrow standalone month, which is one letter in every locale that has one.
+    private static let monthInitialFormatter = formatter(dateFormat: "LLLLL")
+
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
@@ -58,6 +61,22 @@ enum DayFormatting {
             return month.description
         }
         return monthFormatter.string(from: resolved)
+    }
+
+    /// A month's first letter, for a column key too narrow to hold a name.
+    ///
+    /// The locale's own narrow month rather than a table of English initials, so a phone
+    /// set to another language keys its columns in that language.
+    static func monthInitial(_ month: Int) -> String {
+        guard month >= 1, month <= 12 else { return String(month) }
+        var components = DateComponents()
+        components.year = 2001
+        components.month = month
+        components.day = 1
+        guard let resolved = componentCalendar.date(from: components) else {
+            return String(month)
+        }
+        return monthInitialFormatter.string(from: resolved).uppercased()
     }
 
     /// Prints a capture's own wall-clock time.
