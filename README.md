@@ -7,9 +7,10 @@ have to write anything down. Apple Journal asks you to write. rmbr never does.
 
 ## Status
 
-Milestone 1: the reconstruction engine, and a deliberately rough surface for reading a
-day. It rebuilds days from **photographs only** - no calendar, no health data, no
-location history.
+Milestone 1: the reconstruction engine, and the screens that read it - Life as
+full-bleed cover cards, a month mosaic behind the calendar control in Life's top right,
+a day page that opens on a hero photograph, and a film-advance viewer. It rebuilds days
+from **photographs only** - no calendar, no health data, no location history.
 
 That is not a shortcut. rmbr asks for photographs before the paywall and asks for
 everything else after it, so the first days a new user ever sees are built from
@@ -26,8 +27,9 @@ project (see `AGENTS.md`). Grant full access to the photo library when asked; li
 access works, but every count rmbr shows is then a count of what it can see rather than
 of what exists.
 
-Place names need a Geoapify API key, entered once in the reconstruction sheet behind the
-gauge control in the top right. Without one, days still rebuild - they just have
+Place names need a Geoapify API key, entered once in the diagnostics sheet. That sheet
+is instrumentation rather than product, so it has no control of its own: a long press on
+the rmbr wordmark in Life opens it. Without one, days still rebuild - they just have
 coordinates instead of names.
 
 ## What is where

@@ -60,7 +60,7 @@ Naming uses Geoapify, not MapKit, and the reason is licensing rather than qualit
 Apple's Developer Program License Agreement permits caching Map Data "on a temporary and limited basis" only, and a returned `MKMapItem.name` is Map Data; rmbr's whole point is that the label recorded on the day it happened stays that label forever.
 Geoapify licenses indefinite storage and requires OpenStreetMap attribution, so every stored label carries its attribution string and the day exposes `placeAttributions` for the page to print.
 
-The API key lives in the device keychain, entered once through the reconstruction sheet.
+The API key lives in the device keychain, entered once through the diagnostics sheet.
 It is never in the repository, never in an `xcconfig`, never in `Info.plist` and never compiled into a build.
 The master copy belongs in the macOS keychain via `secret set geoapify`.
 
@@ -78,7 +78,7 @@ The month mosaic uses the same bound as the walk, and the month rule counts the 
 
 Older months contribute at most one representative day each, chosen by an ordered cascade that stops at the first tier with a candidate and stores one reason code.
 A month whose days all fail the positive-signal gate stays visibly thin rather than promoting its least bad day.
-Any other old day composes when it is opened, reached through the month destination.
+Any other old day is reached through the month destination, which composes it there.
 
 The window's days and every representative are composed and cached when indexing finishes, off the main actor, and the reconstruction report states how many days that was and what it cost.
 The month destination is a mosaic of every calendar day, so it shows the days that hold nothing as well as the days that do; a cell composes its day the first time it scrolls into view, and the grid is lazy, so a month costs the dozen or so cells actually on screen rather than all thirty-one.
@@ -88,7 +88,7 @@ It holds coordinates the person visited, and re-fetching labels after a restore 
 Exclusion is a precondition rather than a best effort: the flag is set and read back, and a store whose directory cannot be confirmed excluded refuses to write at all.
 
 Geoapify answers from several datasources - OpenStreetMap, OpenAddresses and Who is On First were all seen in live probes - so a stored label carries two credits: the service credit owed for using Geoapify at all, and the datasource credit owed by that particular result.
-`Day.placeAttributions` returns the deduplicated union, and Life, the month listing and the day page all render it.
+`Day.placeAttributions` returns the deduplicated union, and Life, the month mosaic and the day page all render it.
 
 ## Deliberate departures
 
@@ -132,7 +132,7 @@ The whole-archive survey that builds every day's moments and place anchors and p
 A warm launch reuses the snapshot and skips the walk entirely.
 
 At the captain's library size - 24,000 records over 6,502 days reaching back to 2008, exercised by `ScaleTests` - the index builds in **0.093 s**, the archive survey takes **0.269 s**, month selection takes **0.066 s**, and composing one day costs **0.081 ms**, against a 16.7 ms frame.
-Eighteen years of history becomes 1,111 Life rows.
+Eighteen years of history stays a few hundred Life rows rather than six thousand; `ScaleTests` prints the exact count on every run, and it moved off the 1,111 measured before the window began emitting rows for its empty days.
 
 The device figures will differ: simulator PhotoKit is backed by a Mac SSD.
 The app prints the same report to the console on every run, so the device number is one launch away.
