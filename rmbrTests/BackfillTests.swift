@@ -179,4 +179,94 @@ struct LifeEntryTests {
         #expect(dayEntries.first?.year == 2026)
         #expect(dayEntries.last?.year == 2015)
     }
+
+    @Test("Inside the window, one empty day keeps a card and a run collapses")
+    func emptyDaysAndGaps() {
+        let today = LocalDate(year: 2026, month: 8, day: 8)
+        // Captures on the 2nd and the 5th only.
+        let records = [2, 5].map { day in
+            Fixture.capture(
+                "12:00:00", on: LocalDate(year: 2026, month: 8, day: day),
+                in: Fixture.chicago, identifier: "aug-\(day)"
+            )
+        }
+        let index = CaptureIndex(records: records, timeZone: Fixture.chicago)
+        let survey = ArchiveSurveyor.survey(index: index, tuning: .v1)
+        let monthEntries = ArchiveSurveyor.monthEntries(
+            index: index, survey: survey, today: today, tuning: .v1
+        )
+        let entries = LifeEntryBuilder.build(
+            index: index, monthEntries: monthEntries, today: today, tuning: .v1
+        )
+
+        // Newest first: 8-7-6 empty, 5 held, 4-3 empty, 2 held. Nothing before the 2nd,
+        // because the library itself does not reach back that far.
+        let shape = entries.compactMap { entry -> String? in
+            switch entry {
+            case .monthHeader: nil
+            case .day(let date, _): "day-\(date.day)"
+            case .emptyDay(let date): "empty-\(date.day)"
+            case .gap(let newest, let oldest, let days): "gap-\(newest.day)-\(oldest.day)-\(days)"
+            case .emptyMonth: "thin"
+            }
+        }
+        #expect(shape == ["gap-8-6-3", "day-5", "gap-4-3-2", "day-2"])
+    }
+
+    @Test("A single empty day is a card, never a collapsed run")
+    func singleEmptyDayKeepsItsCard() {
+        let today = LocalDate(year: 2026, month: 8, day: 3)
+        let records = [1, 3].map { day in
+            Fixture.capture(
+                "09:00:00", on: LocalDate(year: 2026, month: 8, day: day),
+                in: Fixture.chicago, identifier: "aug-\(day)"
+            )
+        }
+        let index = CaptureIndex(records: records, timeZone: Fixture.chicago)
+        let survey = ArchiveSurveyor.survey(index: index, tuning: .v1)
+        let entries = LifeEntryBuilder.build(
+            index: index,
+            monthEntries: ArchiveSurveyor.monthEntries(
+                index: index, survey: survey, today: today, tuning: .v1
+            ),
+            today: today,
+            tuning: .v1
+        )
+        let hasSingleEmptyDay = entries.contains { entry in
+            if case .emptyDay(let date) = entry { return date.day == 2 }
+            return false
+        }
+        let hasGap = entries.contains { if case .gap = $0 { true } else { false } }
+        #expect(hasSingleEmptyDay)
+        #expect(!hasGap)
+    }
+
+    @Test("Life stops at the library's first photograph rather than at the window")
+    func nothingBeforeTheFirstPhotograph() {
+        let today = LocalDate(year: 2026, month: 8, day: 4)
+        let records = [
+            Fixture.capture(
+                "10:00:00", on: LocalDate(year: 2026, month: 8, day: 3),
+                in: Fixture.chicago, identifier: "only"
+            )
+        ]
+        let index = CaptureIndex(records: records, timeZone: Fixture.chicago)
+        let survey = ArchiveSurveyor.survey(index: index, tuning: .v1)
+        let entries = LifeEntryBuilder.build(
+            index: index,
+            monthEntries: ArchiveSurveyor.monthEntries(
+                index: index, survey: survey, today: today, tuning: .v1
+            ),
+            today: today,
+            tuning: .v1
+        )
+        // One header, the 4th empty, the 3rd held. Nothing for the 1st and 2nd, and no
+        // rows at all for the twenty-three months before this one.
+        #expect(entries.count == 3)
+        let months = entries.compactMap { entry -> Month? in
+            if case .monthHeader(let month, _) = entry { return month }
+            return nil
+        }
+        #expect(months == [Month(year: 2026, month: 8)])
+    }
 }

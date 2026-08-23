@@ -1,6 +1,8 @@
 import Foundation
 import Observation
 import Photos
+import PhotosUI
+import UIKit
 
 enum LibraryPhase: Sendable, Hashable {
     case checkingPermission
@@ -900,6 +902,38 @@ final class LibraryModel {
     /// (RQ-069).
     func dates(in month: Month) -> [LocalDate] {
         (index?.dates(in: month) ?? []).sorted(by: >)
+    }
+
+    /// Opens the system picker that widens a narrowed grant.
+    ///
+    /// The one place rmbr asks for anything: with limited access and nothing chosen
+    /// there is no other way forward, and iOS owns the sheet that fixes it.
+    func presentLimitedPicker() {
+        guard access == .limited else { return }
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        guard let controller = scenes
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .rootViewController else { return }
+        PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: controller)
+    }
+
+    /// Every day with captures in a month, as a set the mosaic can ask per cell.
+    func datesWithCaptures(in month: Month) -> Set<LocalDate> {
+        Set(index?.dates(in: month) ?? [])
+    }
+
+    /// Every calendar day in a month, oldest first.
+    ///
+    /// The mosaic shows the days that hold nothing as well as the days that do, so it
+    /// cannot be built from the index alone. The current month stops at today: rmbr does
+    /// not draw squares for days that have not happened.
+    func calendarDates(in month: Month) -> [LocalDate] {
+        let today = today
+        let isCurrentMonth = month == Month(year: today.year, month: today.month)
+        let last = isCurrentMonth ? today.day : LifeEntryBuilder.daysIn(month)
+        guard last >= 1 else { return [] }
+        return (1...last).map { LocalDate(year: month.year, month: month.month, day: $0) }
     }
 
     func representative(for month: Month) -> MonthlyRepresentative? {
