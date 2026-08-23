@@ -36,6 +36,8 @@ coordinates instead of names.
   place it departs from its specification.
 - `docs/phase-0-findings.md` - the surviving artefact of the measurement spike that came
   before it.
+- `docs/continuous-integration.md` - what CI runs, on which runner, what it costs, and
+  what was deliberately left out of it.
 - `AGENTS.md` - build and test commands, and the sharp edges.
 
 Place names © OpenStreetMap contributors, via Geoapify.
