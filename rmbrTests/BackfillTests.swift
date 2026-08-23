@@ -284,6 +284,67 @@ struct LifeEntryTests {
         #expect(subtitle == "2 days")
     }
 
+    @Test("A day dated into next month keeps a month of its own, and the window does not move")
+    func aDayInNextMonthIsNotLost() {
+        // The shape a westward flight leaves behind. The snapshot was walked in a zone
+        // fourteen hours ahead of UTC and freezes that reading; today is then read in a
+        // zone eleven hours behind it, because only a changed library rebuilds the walk.
+        // Both captures are ordinary photographs whose instants are already past.
+        let kiritimati = TimeZone(identifier: "Pacific/Kiritimati")!
+        let today = LocalDate(year: 2026, month: 8, day: 31)
+        let records = [
+            Fixture.capture(
+                "14:00:00", on: LocalDate(year: 2026, month: 8, day: 30),
+                in: kiritimati, identifier: "home"
+            ),
+            Fixture.capture(
+                "06:00:00", on: LocalDate(year: 2026, month: 9, day: 1),
+                in: kiritimati, identifier: "ahead"
+            )
+        ]
+        let index = CaptureIndex(records: records, timeZone: kiritimati)
+        let survey = ArchiveSurveyor.survey(index: index, tuning: .v1)
+        let entries = LifeEntryBuilder.build(
+            index: index,
+            monthEntries: ArchiveSurveyor.monthEntries(
+                index: index, survey: survey, today: today, tuning: .v1
+            ),
+            today: today,
+            tuning: .v1
+        )
+
+        // Every day the index holds is reachable. That is the whole guarantee.
+        let days = entries.compactMap { entry -> LocalDate? in
+            if case .day(let date, _) = entry { return date }
+            return nil
+        }
+        for date in index.datesWithCaptures { #expect(days.contains(date)) }
+
+        let months = entries.compactMap { entry -> Month? in
+            if case .monthHeader(let month, _) = entry { return month }
+            return nil
+        }
+        #expect(months.first == Month(year: 2026, month: 9))
+
+        // A month that has not begun draws only the days a photograph is dated into: no
+        // empty day, no gap, and nothing for the twenty-nine days after the first.
+        let september = Month(year: 2026, month: 9)
+        let strayRows = entries.filter { entry in
+            switch entry {
+            case .emptyDay(let date): september.contains(date)
+            case .gap(let newest, _, _): september.contains(newest)
+            default: false
+            }
+        }
+        #expect(strayRows.isEmpty)
+
+        // The backfill window is untouched: still twenty-four buckets ending at August.
+        let policy = BackfillPolicy(tuning: .v1)
+        #expect(policy.windowStart(today: today) == Month(year: 2024, month: 9))
+        #expect(policy.months(today: today).count == 24)
+        #expect(policy.months(today: today).last == Month(year: 2026, month: 8))
+    }
+
     @Test("Life stops at the library's first photograph rather than at the window")
     func nothingBeforeTheFirstPhotograph() {
         let today = LocalDate(year: 2026, month: 8, day: 4)

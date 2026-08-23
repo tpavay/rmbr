@@ -51,6 +51,21 @@ enum LifeEntryBuilder {
         let windowStart = policy.windowStart(today: today)
         var entries: [LifeEntry] = []
 
+        // The window's months end at the current one, and a capture can be dated beyond it:
+        // a reading zone left stale by a westward flight, a camera whose clock is set to
+        // another zone, a date a person edited. The photograph is real whatever its date
+        // claims, so the months the index actually holds captures in are emitted above the
+        // window. They carry only the days that hold a photograph - a month that has not
+        // begun has no empty days to show - and when the index holds none this loop runs
+        // zero times and nothing about the twenty-four backfill buckets changes.
+        let currentMonth = Month(year: today.year, month: today.month)
+        for month in index.monthsWithCaptures().filter({ $0 > currentMonth }).sorted(by: >) {
+            let dates = index.dates(in: month).sorted(by: >)
+            guard !dates.isEmpty else { continue }
+            entries.append(.monthHeader(month, subtitle: subtitle(forDaysWithCaptures: dates.count)))
+            entries.append(contentsOf: dates.map { .day($0, treatment: .fullyComposed) })
+        }
+
         for month in policy.months(today: today).reversed() {
             if month < earliestMonth { continue }
 
@@ -134,13 +149,17 @@ enum LifeEntryBuilder {
         datesWithCaptures: some Sequence<LocalDate>
     ) -> Int {
         let full = daysIn(month)
-        guard month == Month(year: today.year, month: today.month) else { return full }
+        let currentMonth = Month(year: today.year, month: today.month)
+        guard month >= currentMonth else { return full }
         let newestCapture = datesWithCaptures
             .lazy
             .filter { month.contains($0) }
             .map(\.day)
             .max() ?? 0
-        return min(full, max(today.day, newestCapture))
+        // A month that has not begun has no days of its own to draw: it stops at the
+        // newest day a photograph is dated into, and holds nothing at all without one.
+        let floorDay = month == currentMonth ? today.day : 0
+        return min(full, max(floorDay, newestCapture))
     }
 
     /// Length of a Gregorian month, without a calendar. The engine stays pure.
