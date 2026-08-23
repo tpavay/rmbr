@@ -1,0 +1,77 @@
+name: CI
+
+# rmbr is a SwiftUI iOS app with an iOS 26 deployment target, so every check it
+# has needs an Apple SDK and a simulator. There is no Linux half of this
+# pipeline; docs/continuous-integration.md explains why, and what that costs.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Supersede a pull request's own earlier pushes; never cancel a main commit,
+  # because with no branch protection on this plan main's run is the only thing
+  # that reports whether main is green.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Xcode and the simulator runtime move together: Xcode 26.3 carries the iOS
+  # 26.2 SDK, so it is iOS 26.2 devices it can drive. This pair is what rmbr is
+  # developed against, which is what makes a green run here mean the same thing
+  # as a green run on a laptop. Both are preinstalled on the macos-26 image; if
+  # a future image drops them, `xcode-select` fails loudly and both values here
+  # get bumped in one edit.
+  XCODE_VERSION: "26.3"
+  SIMULATOR: "iPhone 17 Pro"
+  SIMULATOR_OS: "26.2"
+
+jobs:
+  build-and-test:
+    name: Build and test
+    # macos-26 arm64, pinned rather than macos-latest so the OS cannot change
+    # underneath the project without someone choosing it.
+    runs-on: macos-26
+    # A healthy run is three to five minutes. This bound exists only so a wedged
+    # simulator cannot quietly burn hours at the macOS rate of $0.062/minute.
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        run: |
+          sudo xcode-select -switch "/Applications/Xcode_${XCODE_VERSION}.app"
+          xcodebuild -version
+
+      # Compile first, and only compile. Anything that fails to parse, fails to
+      # type-check, or violates Swift 6 concurrency dies here, before anything
+      # has booted a simulator.
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project rmbr.xcodeproj \
+            -scheme rmbr \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,name=${SIMULATOR},OS=${SIMULATOR_OS}" \
+            -derivedDataPath DerivedData \
+            | xcbeautify --renderer github-actions
+
+      # Only now is booting a simulator worth paying for. About two thirds of
+      # this step is the device coming up before the first test even runs.
+      - name: Test
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building \
+            -project rmbr.xcodeproj \
+            -scheme rmbr \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,name=${SIMULATOR},OS=${SIMULATOR_OS}" \
+            -derivedDataPath DerivedData \
+            | xcbeautify --renderer github-actions

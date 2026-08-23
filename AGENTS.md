@@ -32,6 +32,14 @@ Swift 6 language mode is on. Keep it on.
 
 Every run prints a reconstruction report to the console - asset count, fetch and walk times, days indexed, Life rows - and the same figures appear in the diagnostics sheet, which is instrumentation rather than product and so has no on-screen control: a long press on the wordmark in Life opens it. That report is how first-run cost gets measured rather than estimated.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and every push to `main`: one macOS job that compiles with `build-for-testing` and then runs the suite with `test-without-building`, so a change that does not compile is rejected before a simulator boots.
+CI pins Xcode 26.3 and the iOS 26.2 simulator runtime; those two values move together and live in `env:` at the top of the workflow.
+`docs/continuous-integration.md` is the authoritative account of the runner choice, the cost basis, and everything deliberately left out. Read it before adding a step.
+
+Checks report but cannot block a merge: branch protection is unavailable for private repositories on GitHub Free, so this was chosen rather than overlooked. If that ever changes, the check to require is named **Build and test**.
+
 ## Place names and the Geoapify key
 
 Place labels come from Geoapify rather than MapKit, because Apple forbids permanent storage of Map Data and rmbr's labels are permanent. `docs/reconstruction-engine.md` has the reasoning.
