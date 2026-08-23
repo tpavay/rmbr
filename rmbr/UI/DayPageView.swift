@@ -609,7 +609,7 @@ private struct MediaViewer: View {
             .ignoresSafeArea()
             .allowsHitTesting(false)
             .accessibilityHidden(true)
-            .animation(.easeInOut(duration: 0.22), value: transportIsShowing)
+            .animation(.easeInOut(duration: 0.18), value: transportIsShowing)
             .opacity(chromeOpacity)
 
             VStack(alignment: .leading, spacing: 16) {
@@ -630,7 +630,7 @@ private struct MediaViewer: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             .padding(.horizontal, 22)
             .padding(.bottom, transportIsShowing ? 30 : 60)
-            .animation(.easeInOut(duration: 0.22), value: transportIsShowing)
+            .animation(.easeInOut(duration: 0.18), value: transportIsShowing)
             .opacity(chromeOpacity)
         }
         // There is no close button: the way out is to pull the frame down, which is what
@@ -695,9 +695,7 @@ private struct MediaViewer: View {
                 let committed = value.translation.height > 110
                     || value.predictedEndTranslation.height > 320
                 guard committed else {
-                    withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                        pull = .zero
-                    }
+                    withAnimation(.rmbr) { pull = .zero }
                     return
                 }
                 // A screen changing state under the person's finger, which is the same
