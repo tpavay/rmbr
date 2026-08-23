@@ -58,7 +58,11 @@ osascript -e 'tell application "System Events" to tell process "Simulator" to re
 osascript -e 'tell application "System Events" to click at {x, y}'
 ```
 
-Synthetic scroll wheel and drag events do **not** scroll the simulator's content, so anything below the first viewport cannot be inspected this way. Assert page content through the string-level tests in `rmbrTests/DayPresentationTests.swift` instead.
+Scroll wheel events do **not** scroll the simulator's content, but a synthetic *drag* does, so the whole page can be driven without a human.
+Post `CGEvent` mouse down / dragged / up through `.cghidEventTap` in a tiny Swift helper - a dozen or more `.leftMouseDragged` steps a few milliseconds apart, or the gesture recogniser reads it as a tap.
+The same helper taps buttons that `System Events`' `click at` misses, which it does for SwiftUI controls layered over a scroll view.
+Convert screenshot pixels to screen coordinates with `position of group 1 of window "<device name>"` as the device screen's origin and screenshot pixels / 3 as the offset.
+Where a page's text is all that matters, the string-level tests in `rmbrTests/DayPresentationTests.swift` are still the cheaper assertion.
 
 `xcrun simctl addmedia` takes EXIF `DateTimeOriginal` and GPS as the asset's creation date and location, which is enough to seed a realistically shaped library. It cannot create screenshots: `PHAssetMediaSubtype.photoScreenshot` is set by the system at capture, so screenshot exclusion has to be covered by unit tests.
 
