@@ -399,7 +399,11 @@ private struct MonthCell: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             if hasCaptures, let reference = cover {
-                MediaThumbnail(reference: reference, targetSize: CGSize(width: 300, height: 300))
+                MediaThumbnail(
+                    reference: reference,
+                    targetSize: CGSize(width: 300, height: 300),
+                    cloudFetch: .monthCell
+                )
                     .aspectRatio(1, contentMode: .fill)
             } else {
                 Color.clear

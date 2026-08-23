@@ -264,7 +264,11 @@ private struct DayCard: View {
         ZStack(alignment: .bottomLeading) {
             Group {
                 if let coverID = day.media.coverMediaID, let reference = day.media(coverID) {
-                    MediaThumbnail(reference: reference, targetSize: lifeCoverTargetSize)
+                    MediaThumbnail(
+                        reference: reference,
+                        targetSize: lifeCoverTargetSize,
+                        cloudFetch: .lifeCard
+                    )
                 } else {
                     Rectangle().fill(Palette.smokedGlass)
                 }

@@ -12,9 +12,9 @@ import Testing
 final class StubVideoSource: VideoItemSource {
     enum Answer {
         case video
-        case failure(VideoUnavailability)
+        case failure(CaptureUnavailability)
         /// Report a download and then answer, all before returning.
-        case progressThen(fractions: [Double], Result<Void, VideoUnavailability>)
+        case progressThen(fractions: [Double], Result<Void, CaptureUnavailability>)
         /// Take the request and never answer it.
         case silence
     }
@@ -30,7 +30,7 @@ final class StubVideoSource: VideoItemSource {
     func requestPlayerItem(
         identifier: String,
         progress: @escaping @MainActor (Double) -> Void,
-        deliver: @escaping @MainActor (Result<PlayableVideo, VideoUnavailability>) -> Void
+        deliver: @escaping @MainActor (Result<PlayableVideo, CaptureUnavailability>) -> Void
     ) -> Int {
         requested.append(identifier)
         let requestID = nextID
@@ -323,14 +323,14 @@ struct VideoPlaybackTests {
         // viewer treated the fraction as real, so this reads the sentence instead.
         playback.open(video("half-way"))
         #expect(playback.phase == .unavailable(.cancelled))
-        #expect(VideoUnavailability.cancelled.sentence == nil)
+        #expect(CaptureUnavailability.cancelled.sentence == nil)
     }
 
     @Test("Each way a video can fail to arrive says a different true thing")
     func failuresAreDistinguished() {
-        #expect(VideoUnavailability.notFetched.sentence?.contains("iCloud") == true)
-        #expect(VideoUnavailability.unreadable.sentence == "rmbr could not open this video.")
-        #expect(VideoUnavailability.cancelled.sentence == nil)
+        #expect(CaptureUnavailability.notFetched.sentence?.contains("iCloud") == true)
+        #expect(CaptureUnavailability.unreadable.sentence == "rmbr could not open this video.")
+        #expect(CaptureUnavailability.cancelled.sentence == nil)
     }
 
     @Test("A video that did not arrive can be asked for again")

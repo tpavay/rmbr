@@ -233,7 +233,7 @@ struct LibraryInvalidationTests {
         private(set) var cancelled: [Int] = []
         private(set) var releases = 0
         private(set) var stoppedCaching: [[String]] = []
-        private var deliveries: [Int: @MainActor (UIImage?, Bool) -> Void] = [:]
+        private var deliveries: [Int: @MainActor (ThumbnailUpdate) -> Void] = [:]
         private var nextRequestID = 0
         let issued = RequestLog()
 
@@ -245,7 +245,7 @@ struct LibraryInvalidationTests {
             identifier: String,
             targetSize: CGSize,
             allowNetwork: Bool,
-            deliver: @escaping @MainActor (UIImage?, Bool) -> Void
+            deliver: @escaping @MainActor (ThumbnailUpdate) -> Void
         ) -> Int {
             nextRequestID += 1
             deliveries[nextRequestID] = deliver
@@ -269,7 +269,7 @@ struct LibraryInvalidationTests {
 
         /// Answers a request the way PhotoKit would.
         func deliver(_ image: UIImage, forRequest requestID: Int) {
-            deliveries[requestID]?(image, false)
+            deliveries[requestID]?(.image(image, isDegraded: false))
         }
     }
 
@@ -486,7 +486,8 @@ struct LibraryInvalidationTests {
 
         // One capture is drawn, exactly as a thumbnail draws it.
         let drawing = Task {
-            for await image in store.deliveries(for: shown, targetSize: size) {
+            for await update in store.deliveries(for: shown, targetSize: size) {
+                guard case .image(let image, _) = update else { continue }
                 held.delivered = DeliveredImage(image: image, generation: generation)
             }
         }

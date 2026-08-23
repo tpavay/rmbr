@@ -50,19 +50,21 @@ Geoapify's terms require OpenStreetMap attribution wherever the stored label is 
 
 ## Playing a video
 
-`rmbr/UI/VideoPlayback.swift` and `rmbr/UI/VideoSurface.swift` hold everything: the PhotoKit fetch, the audio session policy, the one player, and the transport that draws it. `MediaViewer` in `DayPageView.swift` owns exactly one `VideoPlayback` for the whole strip, so a day of videos costs one decoder and every other frame stays the still it already was. Read the doc comments there before changing any of it; the reasoning for each choice is written where the choice is.
+`rmbr/UI/VideoPlayback.swift` and `rmbr/UI/VideoSurface.swift` hold everything: the PhotoKit fetch, the audio session policy, the one player, and the transport that draws it. The wait and the failure it shows are shared with the pixel path and live in `rmbr/UI/CloudFetch.swift`. `MediaViewer` in `DayPageView.swift` owns exactly one `VideoPlayback` for the whole strip, so a day of videos costs one decoder and every other frame stays the still it already was. Read the doc comments there before changing any of it; the reasoning for each choice is written where the choice is.
 
 Two PhotoKit behaviours cost time to establish and are easy to hit again:
 
 - The `AVPlayerItem` from `PHImageManager.requestPlayerItem` sits at `.unknown` and never moves on its own. Waiting on `AVPlayerItem.status` is waiting on a spinner that never resolves; `await item.asset.load(.isPlayable)` is what answers.
-- `PHVideoRequestOptions.progressHandler` fires once with `1.0` for an original that is already on the device. Treating that as a download prints "fetching from iCloud, 100%" about a local file, so only a fraction strictly between 0 and 1 counts as evidence of one.
+- `PHVideoRequestOptions.progressHandler`, and `PHImageRequestOptions.progressHandler` with it, fires once with `1.0` for an original that is already on the device. Treating that as a download prints "fetching from iCloud, 100%" about a local file, so only a fraction strictly between 0 and 1 counts as evidence of one.
 
-The two states an iCloud-only original produces cannot be reached on a simulator, whose originals are all local. `SimulatedCloudVideoSource` (debug builds only) drives them through the real code path:
+The two states an iCloud-only original produces cannot be reached on a simulator, whose originals are all local. `SimulatedCloudVideoSource` and `SimulatedCloudImageSource` (debug builds only) drive them through the real code path, for videos and for photographs, off the same two launch arguments:
 
 ```
 xcrun simctl launch <device> com.TylerPavay.rmbr -rmbrSimulateCloudFetch 8
 xcrun simctl launch <device> com.TylerPavay.rmbr -rmbrSimulateCloudFetch 4 -rmbrSimulateCloudFailure
 ```
+
+They simulate the *sequence of passes*, which is what every state is driven by; they cannot simulate the pixels, so the frame under the ring is sharper than a real offloaded capture's would be. Which surfaces fetch at all, and which of them say so, is argued surface by surface in `CloudFetchPolicy`; `docs/reconstruction-engine.md` has the reasoning.
 
 ## Sharp edges worth knowing before you hit them
 
