@@ -104,7 +104,11 @@ struct DayPageView: View {
         ZStack(alignment: .bottomLeading) {
             Group {
                 if let cover {
-                    MediaThumbnail(reference: cover, targetSize: CGSize(width: 1400, height: 1800))
+                    MediaThumbnail(
+                        reference: cover,
+                        targetSize: CGSize(width: 1400, height: 1800),
+                        cloudFetch: .dayHero
+                    )
                         // The parallax reads the hero's own position rather than a stored
                         // offset, so pulling the page down costs a redraw and not a
                         // rebuild of everything below it.
@@ -433,7 +437,8 @@ private struct MomentRow: View {
                                     .overlay {
                                         MediaThumbnail(
                                             reference: reference,
-                                            targetSize: dayGridTargetSize
+                                            targetSize: dayGridTargetSize,
+                                            cloudFetch: .dayGridCell
                                         )
                                     }
                                     .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -546,7 +551,12 @@ private struct MediaViewer: View {
                             MediaThumbnail(
                                 reference: reference,
                                 targetSize: frameTarget(for: reference, fitting: proxy.size),
-                                allowNetwork: true,
+                                // A video frame says nothing about its own still: the
+                                // control drawn over it is already stating this frame's
+                                // wait and this frame's failure.
+                                cloudFetch: reference.kind == .video
+                                    ? .viewerVideoFrame
+                                    : .viewerStill,
                                 showsVideoBadge: false
                             )
                             // The video draws over the still it was standing in for, in

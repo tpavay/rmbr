@@ -57,19 +57,17 @@ struct VideoFrameControl: View {
     let onPlay: () -> Void
     let onRetry: () -> Void
 
-    @State private var spin = false
-
     var body: some View {
         switch phase {
         case .idle:
             playControl
         case .preparing(let progress):
-            waiting(progress)
+            CloudFetchWaiting(progress: progress)
         case .ready:
             EmptyView()
         case .unavailable(let reason):
             if let sentence = reason.sentence {
-                unavailable(sentence)
+                CloudFetchFailure(sentence: sentence, onRetry: onRetry)
             } else {
                 playControl
             }
@@ -91,68 +89,6 @@ struct VideoFrameControl: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Play")
-    }
-
-    /// The video was asked for and has not arrived.
-    ///
-    /// A determinate ring whenever PhotoKit reports a download, because "42 per cent of
-    /// the way through fetching this from iCloud" is a fact worth stating and an
-    /// indeterminate spinner would be rmbr pretending not to know it.
-    private func waiting(_ progress: Double?) -> some View {
-        VStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .strokeBorder(Color.white.opacity(0.16), lineWidth: 2)
-                Circle()
-                    .trim(from: 0, to: progress.map { min(max($0, 0.02), 1) } ?? 0.16)
-                    .stroke(Palette.emberGlow, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .rotationEffect(.degrees(progress == nil ? (spin ? 360 : 0) : -90))
-                    .animation(
-                        progress == nil
-                            ? .linear(duration: 0.85).repeatForever(autoreverses: false)
-                            : .easeOut(duration: 0.25),
-                        value: progress == nil ? spin : (progress ?? 0) > 0
-                    )
-            }
-            .frame(width: 44, height: 44)
-            .background(.ultraThinMaterial, in: Circle())
-
-            if let progress {
-                Text("Fetching from iCloud · \(Int((progress * 100).rounded()))%")
-                    .font(.utility(11.5))
-                    .foregroundStyle(Palette.moonlightWhite.opacity(0.85))
-                    .monospacedDigit()
-                    .shadow(radius: 4)
-            }
-        }
-        .onAppear { spin = true }
-        .accessibilityElement()
-        .accessibilityLabel(
-            progress.map { "Fetching from iCloud, \(Int(($0 * 100).rounded())) per cent" }
-                ?? "Opening video"
-        )
-    }
-
-    /// The video is not going to play, and the sentence says which kind of not.
-    private func unavailable(_ sentence: String) -> some View {
-        VStack(spacing: 14) {
-            Text(sentence)
-                .font(.utility(13.5))
-                .foregroundStyle(Palette.moonlightWhite.opacity(0.9))
-                .multilineTextAlignment(.center)
-                .shadow(radius: 5)
-            Button(action: onRetry) {
-                Text("Try again")
-                    .font(.utility(12.5, weight: .semibold))
-                    .foregroundStyle(Palette.emberGlow)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(.ultraThinMaterial, in: Capsule())
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 30)
-        .frame(maxWidth: 320)
     }
 }
 

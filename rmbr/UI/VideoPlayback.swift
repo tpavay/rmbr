@@ -2,31 +2,10 @@ import AVFoundation
 import Photos
 import SwiftUI
 
-/// Why a video did not become playable.
-///
-/// Each case is a different true sentence. "Something went wrong" is not one of them:
-/// a video sitting in iCloud that rmbr could not fetch is a different fact from a video
-/// on this phone that will not open, and the person can act on the first.
-enum VideoUnavailability: Error, Sendable, Hashable {
-    /// The person swiped away, or the request was superseded. Nothing to say.
-    case cancelled
-    /// The original lives in iCloud and the download did not finish.
-    case notFetched
-    /// It is here and it will not open.
-    case unreadable
-
-    /// What the viewer prints. One sentence, stated rather than apologised for.
-    var sentence: String? {
-        switch self {
-        case .cancelled:
-            return nil
-        case .notFetched:
-            return "This video is stored in iCloud and rmbr could not finish downloading it."
-        case .unreadable:
-            return "rmbr could not open this video."
-        }
-    }
-}
+// Why a video did not become playable is `CaptureUnavailability`, which the pixel path
+// states too: an original stranded in iCloud is the same fact whether what is stranded is
+// a video that will not play or a photograph that will not draw, and rmbr tells it in one
+// voice rather than two.
 
 /// A video that is ready to be played, and how long it runs for.
 ///
@@ -56,7 +35,7 @@ protocol VideoItemSource: AnyObject {
     func requestPlayerItem(
         identifier: String,
         progress: @escaping @MainActor (Double) -> Void,
-        deliver: @escaping @MainActor (Result<PlayableVideo, VideoUnavailability>) -> Void
+        deliver: @escaping @MainActor (Result<PlayableVideo, CaptureUnavailability>) -> Void
     ) -> Int
 
     func cancel(_ requestID: Int)
@@ -86,7 +65,7 @@ final class PhotoKitVideoSource: VideoItemSource {
     func requestPlayerItem(
         identifier: String,
         progress: @escaping @MainActor (Double) -> Void,
-        deliver: @escaping @MainActor (Result<PlayableVideo, VideoUnavailability>) -> Void
+        deliver: @escaping @MainActor (Result<PlayableVideo, CaptureUnavailability>) -> Void
     ) -> Int {
         let token = nextRequestID
         nextRequestID += 1
@@ -102,8 +81,9 @@ final class PhotoKitVideoSource: VideoItemSource {
             }
 
             let options = PHVideoRequestOptions()
-            // The viewer is a capture the person opened deliberately, which is the one
-            // place rmbr spends the network. Inline thumbnails still never do.
+            // The viewer is a capture the person opened deliberately, which is why it
+            // spends the network. Where the pixel path does the same is argued surface
+            // by surface in `CloudFetchPolicy`; a scroll of thumbnails still never does.
             options.isNetworkAccessAllowed = true
             // The version the person would see in Photos, edits included.
             options.version = .current
@@ -311,7 +291,7 @@ final class VideoPlayback {
         /// reports one, and nil while it is merely opening something already local.
         case preparing(progress: Double?)
         case ready
-        case unavailable(VideoUnavailability)
+        case unavailable(CaptureUnavailability)
     }
 
     /// How many `AVPlayer`s this type currently holds across the whole app.

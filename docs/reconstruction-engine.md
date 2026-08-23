@@ -43,6 +43,21 @@ Muted playback claims `AVAudioSession` `.ambient`, which mixes with whatever els
 The transport - play, position, a scrubber, and sound - is drawn in the app's own language rather than taken from `AVPlayerViewController`, whose scrubber and tap-to-reveal gestures would compete with the swipe that turns the page.
 It lives in the viewer's chrome outside the paging `TabView` for the same reason.
 
+### Originals iCloud has offloaded
+
+PhotoKit answers an image request that refuses the network with the degraded thumbnail it happens to hold on the device and nothing more, so whether a surface allows one is the difference between a capture that arrives at full quality and a capture that is blurry for ever.
+Milestone 1 shipped with the network refused everywhere except the full-screen viewer, which made the day page's hero permanently blurry for every photograph old enough for iCloud to have taken the original away (#14).
+
+The decision is per surface rather than one default, and every decision is named and argued in `CloudFetchPolicy` in `rmbr/UI/CloudFetch.swift`; each `MediaThumbnail` call site names its own.
+The hero and the viewer fetch, because they are single captures on pages somebody navigated to deliberately.
+The Life cards, the month mosaic and the day page's moment rail do not, because they are scrolled past by the hundred and fetching them would spend a great deal of somebody's data on photographs nobody stopped to look at.
+
+Fetching is only half of it.
+A surface that can reach iCloud can also be slow or fail, so the ones that fetch also state the wait and state the failure, in the vocabulary the video path already established: `CaptureUnavailability` carries the three reasons for both paths, and `CloudFetchWaiting` and `CloudFetchFailure` are the same two views `VideoFrameControl` draws.
+A wait is silent until it has lasted about six-tenths of a second or PhotoKit has reported an actual download, because an original already on the device is decoded in a frame or two and a ring that appears and vanishes on every page is chrome pretending something happened.
+
+`SimulatedCloudImageSource` drives those states on a machine whose originals are all local; it shares the video simulation's launch arguments, which `AGENTS.md` lists.
+
 ## Day boundary
 
 `DayBoundaryPolicy` has two implementations.

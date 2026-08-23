@@ -2,6 +2,21 @@ import Photos
 import SwiftUI
 import UIKit
 
+/// One pass of a thumbnail request, as PhotoKit makes it.
+///
+/// A request is not one answer. PhotoKit opens with the degraded thumbnail it holds
+/// locally, may then report a download of the original iCloud has taken away, and ends
+/// with either the full-quality pixels or a reason there are none. All four are the same
+/// request talking, so they travel as one type rather than as an image and a silence.
+enum ThumbnailUpdate: Sendable {
+    /// Pixels, and whether they are the placeholder pass rather than what was asked for.
+    case image(UIImage, isDegraded: Bool)
+    /// An iCloud download, from 0 to 1.
+    case fetching(Double)
+    /// There will be no full-quality pixels, and this is why.
+    case unavailable(CaptureUnavailability)
+}
+
 /// Everything the thumbnail store needs from PhotoKit.
 ///
 /// Local identifiers are the currency rather than `PHAsset`, because a `PHAsset` cannot
@@ -14,13 +29,17 @@ protocol ThumbnailImageSource: AnyObject {
     /// Resolves identifiers away from the main actor, answering those that resolved.
     func resolve(_ identifiers: [String]) async -> [String]
 
-    /// Issues one request. `deliver` reports each pass with whether it is the degraded
-    /// one, and nil when the request came back with nothing.
+    /// Issues one request, reporting every pass it makes.
+    ///
+    /// `allowNetwork` is the difference between a capture that can arrive at full quality
+    /// and one that stays the degraded local thumbnail for ever: PhotoKit answers a
+    /// request that refuses the network with whatever it holds on the device and nothing
+    /// more. Which surfaces spend it is `CloudFetchPolicy`.
     func requestImage(
         identifier: String,
         targetSize: CGSize,
         allowNetwork: Bool,
-        deliver: @escaping @MainActor (UIImage?, Bool) -> Void
+        deliver: @escaping @MainActor (ThumbnailUpdate) -> Void
     ) -> Int
 
     func cancel(_ requestID: Int)
@@ -78,16 +97,21 @@ final class PhotoKitImageSource: ThumbnailImageSource {
         identifier: String,
         targetSize: CGSize,
         allowNetwork: Bool,
-        deliver: @escaping @MainActor (UIImage?, Bool) -> Void
+        deliver: @escaping @MainActor (ThumbnailUpdate) -> Void
     ) -> Int {
         guard let asset = assets.object(forKey: identifier as NSString) else {
-            deliver(nil, false)
+            deliver(.unavailable(.unreadable))
             return Int(PHInvalidImageRequestID)
         }
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic
         options.resizeMode = .fast
         options.isNetworkAccessAllowed = allowNetwork
+        // Only ever called for an original that is actually being downloaded, and only
+        // where the request allowed one. PhotoKit runs it off the main actor.
+        options.progressHandler = { fraction, _, _, _ in
+            Task { @MainActor in deliver(.fetching(fraction)) }
+        }
 
         let requestID = manager.requestImage(
             for: asset,
@@ -95,8 +119,25 @@ final class PhotoKitImageSource: ThumbnailImageSource {
             contentMode: .aspectFill,
             options: options
         ) { image, info in
+            let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            let cancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+            let inCloud = (info?[PHImageResultIsInCloudKey] as? Bool) ?? false
+            let errored = info?[PHImageErrorKey] != nil
             MainActor.assumeIsolated {
-                deliver(image, (info?[PHImageResultIsDegradedKey] as? Bool) ?? false)
+                guard let image else {
+                    if cancelled {
+                        deliver(.unavailable(.cancelled))
+                    } else {
+                        // The original is in iCloud, or a request that asked for the
+                        // network came back with nothing and no error, which is the same
+                        // thing said differently. Anything else is pixels that will not
+                        // decode. This is the reading `PhotoKitVideoSource` takes of the
+                        // same three keys.
+                        deliver(.unavailable(inCloud || !errored ? .notFetched : .unreadable))
+                    }
+                    return
+                }
+                deliver(.image(image, isDegraded: isDegraded))
             }
         }
         return Int(requestID)
@@ -138,8 +179,8 @@ final class PhotoKitImageSource: ThumbnailImageSource {
 ///
 /// rmbr keeps no copies of anybody's photographs. Every image on screen comes from
 /// PhotoKit's own cache through `PHCachingImageManager`, which is also why an
-/// iCloud-only original does not stall a scroll: network access is off for inline
-/// thumbnails and only turned on for a capture the person opened.
+/// iCloud-only original does not stall a scroll: network access is off by default and
+/// turned on only by the surfaces that have argued for it in `CloudFetchPolicy`.
 ///
 /// What has been decoded is held in a bounded cache the system empties under memory
 /// pressure, so a long scroll through a large library never accumulates a library's
@@ -167,7 +208,7 @@ final class ThumbnailStore {
     @MainActor
     private final class Request {
         var requestID: Int?
-        var consumers: [UUID: AsyncStream<UIImage>.Continuation] = [:]
+        var consumers: [UUID: AsyncStream<ThumbnailUpdate>.Continuation] = [:]
     }
 
     private struct Preheat {
@@ -175,10 +216,20 @@ final class ThumbnailStore {
         let targetSize: CGSize
     }
 
-    init(source: ThumbnailImageSource = PhotoKitImageSource()) {
-        self.source = source
+    init(source: ThumbnailImageSource? = nil) {
+        self.source = source ?? ThumbnailStore.librarySource()
         images.totalCostLimit = 48 * 1024 * 1024
         images.countLimit = 200
+    }
+
+    /// The real library, unless a debug build was launched asking to be lied to about
+    /// where the originals live.
+    private static func librarySource() -> ThumbnailImageSource {
+        let library = PhotoKitImageSource()
+        #if DEBUG
+        if let simulated = SimulatedCloudImageSource(wrapping: library) { return simulated }
+        #endif
+        return library
     }
 
     /// What is already decoded at this size, if anything.
@@ -194,16 +245,18 @@ final class ThumbnailStore {
         delivered?.pixels(inGeneration: generation)
     }
 
-    /// Every delivery PhotoKit makes for one request, the degraded pass first.
+    /// Every pass PhotoKit makes for one request, the degraded image first.
     ///
-    /// The stream ends once the full-quality image has arrived or the request came back
-    /// with nothing. A caller that goes away before then ends its own iteration, and the
-    /// underlying request is cancelled as soon as nobody is left waiting on it.
+    /// The stream ends once the full-quality image has arrived or the request has said
+    /// why it will not, and it never simply stops: a surface waiting on this is told the
+    /// wait is over either way, which is what lets a blurry frame account for itself
+    /// rather than sit there. A caller that goes away before then ends its own iteration,
+    /// and the underlying request is cancelled as soon as nobody is left waiting on it.
     func deliveries(
         for reference: MediaReference,
         targetSize: CGSize,
         allowNetwork: Bool = false
-    ) -> AsyncStream<UIImage> {
+    ) -> AsyncStream<ThumbnailUpdate> {
         let key = Self.key(reference.localIdentifier, targetSize)
         let token = UUID()
         return AsyncStream { continuation in
@@ -274,7 +327,9 @@ final class ThumbnailStore {
         generation += 1
         for key in Array(inFlight.keys) {
             if let requestID = inFlight[key]?.requestID { source.cancel(requestID) }
-            finish(key)
+            // Cancelled rather than failed: a grant that ended under a fetch is not a
+            // capture that would not come, and nothing on screen may claim it was.
+            finish(key, saying: .cancelled)
         }
         for work in preheatWork.values { work.cancel() }
         preheatWork.removeAll()
@@ -289,10 +344,10 @@ final class ThumbnailStore {
         reference: MediaReference,
         targetSize: CGSize,
         allowNetwork: Bool,
-        continuation: AsyncStream<UIImage>.Continuation
+        continuation: AsyncStream<ThumbnailUpdate>.Continuation
     ) async {
         if let cached = images.object(forKey: key as NSString) {
-            continuation.yield(cached)
+            continuation.yield(.image(cached, isDegraded: false))
             continuation.finish()
             return
         }
@@ -310,7 +365,9 @@ final class ThumbnailStore {
         // Everybody may have scrolled away while the identifier was being resolved.
         guard inFlight[key] === request else { return }
         guard resolved.contains(reference.localIdentifier) else {
-            finish(key)
+            // An identifier the library will not resolve is a capture that cannot be
+            // drawn, which is a different silence from a slow one and is said as much.
+            finish(key, saying: .unreadable)
             return
         }
 
@@ -318,36 +375,43 @@ final class ThumbnailStore {
             identifier: reference.localIdentifier,
             targetSize: targetSize,
             allowNetwork: allowNetwork
-        ) { [weak self] image, isDegraded in
-            self?.deliver(image, isDegraded: isDegraded, forKey: key, from: request)
+        ) { [weak self] update in
+            self?.deliver(update, forKey: key, from: request)
         }
         // A fast delivery can land before the request returns, in which case this request
         // is already finished and the identifier belongs to nothing.
         if inFlight[key] === request { request.requestID = requestID }
     }
 
-    private func deliver(
-        _ image: UIImage?,
-        isDegraded: Bool,
-        forKey key: String,
-        from request: Request
-    ) {
+    private func deliver(_ update: ThumbnailUpdate, forKey key: String, from request: Request) {
         // A cancelled request can still deliver late, by which time the key may belong to
         // a request somebody else is waiting on. Only the request that asked may answer.
         guard inFlight[key] === request else { return }
-        guard let image else {
+        switch update {
+        case .fetching(let fraction):
+            // PhotoKit reports a single completed pass for an original that was already
+            // here, and "fetching from iCloud, 100 per cent" about a file sitting on the
+            // phone is not true. A fraction short of the whole is the only evidence that
+            // something is actually being downloaded.
+            guard fraction > 0, fraction < 1 else { return }
+            for continuation in request.consumers.values { continuation.yield(update) }
+        case .image(let image, let isDegraded):
+            for continuation in request.consumers.values { continuation.yield(update) }
+            guard !isDegraded else { return }
+            images.setObject(image, forKey: key as NSString, cost: Self.cost(of: image))
             finish(key)
-            return
+        case .unavailable(let reason):
+            finish(key, saying: reason)
         }
-        for continuation in request.consumers.values { continuation.yield(image) }
-        guard !isDegraded else { return }
-        images.setObject(image, forKey: key as NSString, cost: Self.cost(of: image))
-        finish(key)
     }
 
-    private func finish(_ key: String) {
+    /// Ends every iteration waiting on this request, saying why where there is a why.
+    private func finish(_ key: String, saying reason: CaptureUnavailability? = nil) {
         guard let request = inFlight.removeValue(forKey: key) else { return }
-        for continuation in request.consumers.values { continuation.finish() }
+        for continuation in request.consumers.values {
+            if let reason { continuation.yield(.unavailable(reason)) }
+            continuation.finish()
+        }
     }
 
     private func release(token: UUID, key: String) {
@@ -391,10 +455,18 @@ struct DeliveredImage {
 struct MediaThumbnail: View {
     @Environment(ThumbnailStore.self) private var store
     @State private var delivered: DeliveredImage?
+    /// Where the fetch has got to, and whether that is worth saying. Only kept where the
+    /// surface states it: a grid of postage stamps must not redraw itself to track a
+    /// story it has decided not to tell.
+    @State private var fetch = CloudFetchState()
+    /// Bumped by asking again, which is a new request rather than a retried one.
+    @State private var attempt = 0
 
     let reference: MediaReference
     var targetSize: CGSize = CGSize(width: 600, height: 600)
-    var allowNetwork = false
+    /// What this surface does about an original iCloud has taken off the device, and
+    /// what it says while that is going on. Every call site names its own.
+    var cloudFetch: CloudFetchPolicy = .refuse
     /// Whether a video says so with a corner badge.
     ///
     /// True everywhere a video would otherwise be indistinguishable from a still. The
@@ -414,6 +486,15 @@ struct MediaThumbnail: View {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
+                }
+            }
+            .overlay {
+                if cloudFetch.statesFetch, let phase = fetch.statement {
+                    CloudFetchNotice(
+                        phase: phase,
+                        kind: reference.kind,
+                        onRetry: cloudFetch.offersRetry ? { attempt += 1 } : nil
+                    )
                 }
             }
             .overlay(alignment: .bottomLeading) {
@@ -448,17 +529,46 @@ struct MediaThumbnail: View {
             // generation it was fetched under on the way in. The size is part of it too,
             // because a caller sizing its target from geometry can settle on a different
             // one than it first reported.
-            .task(id: "\(store.generation):\(ThumbnailStore.key(reference.localIdentifier, targetSize))") {
+            .task(
+                id: "\(attempt):\(store.generation)"
+                    + ":\(ThumbnailStore.key(reference.localIdentifier, targetSize))"
+            ) {
                 let generation = store.generation
-                delivered = store.cachedImage(for: reference, targetSize: targetSize)
-                    .map { DeliveredImage(image: $0, generation: generation) }
-                for await image in store.deliveries(
+                fetch = CloudFetchState()
+                let cached = store.cachedImage(for: reference, targetSize: targetSize)
+                if let cached {
+                    delivered = DeliveredImage(image: cached, generation: generation)
+                    fetch.apply(.image(cached, isDegraded: false))
+                }
+                // Nothing decoded yet is the only case with a wait to time.
+                let grace = cached == nil ? graceTask() : nil
+                defer { grace?.cancel() }
+                for await update in store.deliveries(
                     for: reference,
                     targetSize: targetSize,
-                    allowNetwork: allowNetwork
+                    allowNetwork: cloudFetch.allowsNetwork
                 ) {
-                    delivered = DeliveredImage(image: image, generation: generation)
+                    if case .image(let image, _) = update {
+                        delivered = DeliveredImage(image: image, generation: generation)
+                    }
+                    guard cloudFetch.statesFetch else { continue }
+                    fetch.apply(update)
                 }
             }
+    }
+
+    /// Starts the clock that decides a wait has become worth stating.
+    ///
+    /// An original already on the device arrives in a frame or two, so a ring drawn the
+    /// moment a page appears would be a spinner on every day the person opens. Nothing is
+    /// said until the wait has actually been one - or until PhotoKit reports a download,
+    /// which says it sooner and with a number on it.
+    private func graceTask() -> Task<Void, Never>? {
+        guard cloudFetch.statesFetch else { return nil }
+        return Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            fetch.waitBecameWorthStating()
+        }
     }
 }
