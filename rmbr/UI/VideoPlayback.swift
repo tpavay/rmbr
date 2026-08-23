@@ -1,5 +1,4 @@
 import AVFoundation
-import Combine
 import Photos
 import SwiftUI
 
@@ -29,6 +28,18 @@ enum VideoUnavailability: Error, Sendable, Hashable {
     }
 }
 
+/// A video that is ready to be played, and how long it runs for.
+///
+/// Playability is established before this exists rather than after, because the item
+/// PhotoKit hands over reports `.unknown` for ever and asking the player about it is
+/// asking a spinner. A source that cannot answer both facts has nothing to deliver.
+struct PlayableVideo {
+    let item: AVPlayerItem
+    /// The asset's own length, which is what a slow-motion capture plays for rather than
+    /// what it was shot in.
+    let duration: TimeInterval
+}
+
 /// Everything video playback needs from PhotoKit.
 ///
 /// A protocol for the same reason `ThumbnailImageSource` is one: the behaviour that
@@ -37,14 +48,15 @@ enum VideoUnavailability: Error, Sendable, Hashable {
 /// library holds only local originals. Naming it lets those paths be driven.
 @MainActor
 protocol VideoItemSource: AnyObject {
-    /// Issues one request for a playable item.
+    /// Issues one request for something playable.
     ///
     /// `progress` reports an iCloud download from 0 to 1 and is never called for an
-    /// original that is already here. `deliver` is called exactly once.
+    /// original that is already here. `deliver` is called exactly once, and only ever
+    /// with a video that has already been established as playable.
     func requestPlayerItem(
         identifier: String,
         progress: @escaping @MainActor (Double) -> Void,
-        deliver: @escaping @MainActor (Result<AVPlayerItem, VideoUnavailability>) -> Void
+        deliver: @escaping @MainActor (Result<PlayableVideo, VideoUnavailability>) -> Void
     ) -> Int
 
     func cancel(_ requestID: Int)
@@ -67,13 +79,14 @@ private struct Handoff<Value>: @unchecked Sendable {
 final class PhotoKitVideoSource: VideoItemSource {
     private let manager = PHImageManager.default()
     private var resolving: [Int: Task<Void, Never>] = [:]
+    private var loading: [Int: Task<Void, Never>] = [:]
     private var issued: [Int: PHImageRequestID] = [:]
     private var nextRequestID = 1
 
     func requestPlayerItem(
         identifier: String,
         progress: @escaping @MainActor (Double) -> Void,
-        deliver: @escaping @MainActor (Result<AVPlayerItem, VideoUnavailability>) -> Void
+        deliver: @escaping @MainActor (Result<PlayableVideo, VideoUnavailability>) -> Void
     ) -> Int {
         let token = nextRequestID
         nextRequestID += 1
@@ -106,16 +119,38 @@ final class PhotoKitVideoSource: VideoItemSource {
                 let inCloud = (info?[PHImageResultIsInCloudKey] as? Bool) ?? false
                 let errored = info?[PHImageErrorKey] != nil
                 Task { @MainActor [weak self] in
-                    self?.issued[token] = nil
-                    if let item = handoff.value {
-                        deliver(.success(item))
-                    } else if cancelled {
-                        deliver(.failure(.cancelled))
-                    } else {
-                        // A request that asked for the network and still came back with
-                        // nothing either never reached iCloud or was interrupted on the
-                        // way; anything else is an original that will not open.
-                        deliver(.failure(inCloud || !errored ? .notFetched : .unreadable))
+                    guard let self else { return }
+                    self.issued[token] = nil
+                    guard let item = handoff.value else {
+                        if cancelled {
+                            deliver(.failure(.cancelled))
+                        } else {
+                            // A request that asked for the network and still came back
+                            // with nothing either never reached iCloud or was interrupted
+                            // on the way; anything else is an original that will not open.
+                            deliver(.failure(inCloud || !errored ? .notFetched : .unreadable))
+                        }
+                        return
+                    }
+                    self.loading[token] = Task { @MainActor [weak self] in
+                        // The item sits at `.unknown` until something asks the player to
+                        // move, so playability is asked of the asset instead. This is the
+                        // source's job: nothing downstream should have to wonder whether
+                        // what it was handed will open.
+                        do {
+                            let (playable, length) = try await item.asset.load(.isPlayable, .duration)
+                            guard !Task.isCancelled else { return }
+                            self?.loading[token] = nil
+                            guard playable else {
+                                deliver(.failure(.unreadable))
+                                return
+                            }
+                            deliver(.success(PlayableVideo(item: item, duration: length.seconds)))
+                        } catch {
+                            guard !Task.isCancelled else { return }
+                            self?.loading[token] = nil
+                            deliver(.failure(.unreadable))
+                        }
                     }
                 }
             }
@@ -125,6 +160,7 @@ final class PhotoKitVideoSource: VideoItemSource {
 
     func cancel(_ requestID: Int) {
         resolving.removeValue(forKey: requestID)?.cancel()
+        loading.removeValue(forKey: requestID)?.cancel()
         if let photoKitID = issued.removeValue(forKey: requestID) {
             manager.cancelImageRequest(photoKitID)
         }
@@ -303,7 +339,6 @@ final class VideoPlayback {
     private var requestID: Int?
     private var reference: MediaReference?
     private var timeObserver: Any?
-    private var statusWatch: Task<Void, Never>?
     private var endWatch: Task<Void, Never>?
     private var failureWatch: Task<Void, Never>?
     /// Bumped by every teardown, so a fetch issued for a frame the person has already
@@ -360,8 +395,8 @@ final class VideoPlayback {
                 guard let self, self.generation == issued else { return }
                 self.requestID = nil
                 switch result {
-                case .success(let item):
-                    self.install(item)
+                case .success(let video):
+                    self.install(video)
                 case .failure(let reason):
                     self.phase = .unavailable(reason)
                 }
@@ -444,8 +479,6 @@ final class VideoPlayback {
             source.cancel(requestID)
             self.requestID = nil
         }
-        statusWatch?.cancel()
-        statusWatch = nil
         endWatch?.cancel()
         endWatch = nil
         failureWatch?.cancel()
@@ -472,7 +505,8 @@ final class VideoPlayback {
 
     // MARK: Private
 
-    private func install(_ item: AVPlayerItem) {
+    private func install(_ video: PlayableVideo) {
+        let item = video.item
         let player = AVPlayer(playerItem: item)
         player.isMuted = isMuted
         // Holding the last frame rather than blanking to black: the final frame of a
@@ -483,6 +517,10 @@ final class VideoPlayback {
         VideoPlayback.livePlayerCount += 1
         reportVideoPlayback("opened \(reference?.localIdentifier ?? "?")")
 
+        // The asset's own length, which is what a slow-motion capture plays for. The
+        // index's figure stands only until this arrives.
+        if video.duration.isFinite, video.duration > 0 { length = video.duration }
+
         // Thirty times a second, which is what a scrubber has to move at to look like it
         // is following the video rather than sampling it.
         let interval = CMTime(value: 1, timescale: 30)
@@ -491,34 +529,6 @@ final class VideoPlayback {
             MainActor.assumeIsolated {
                 guard let self, !self.isScrubbing else { return }
                 self.position = time.seconds.isFinite ? max(0, time.seconds) : 0
-                if let known = self.player?.currentItem?.duration.seconds,
-                   known.isFinite, known > 0, abs(known - self.length) > 0.05 {
-                    self.length = known
-                }
-            }
-        }
-
-        // `AVAsset.load` rather than watching `AVPlayerItem.status`: the item PhotoKit
-        // hands over sits at `.unknown` until something asks the player to move, so
-        // waiting on that status is waiting on a spinner that never resolves. Loading
-        // the asset's own playability answers, and answers with a throw when it cannot.
-        statusWatch = Task { @MainActor [weak self] in
-            do {
-                let (playable, assetDuration) = try await item.asset.load(.isPlayable, .duration)
-                guard let self, !Task.isCancelled, self.player?.currentItem === item else { return }
-                guard playable else {
-                    self.phase = .unavailable(.unreadable)
-                    return
-                }
-                let seconds = assetDuration.seconds
-                if seconds.isFinite, seconds > 0 { self.length = seconds }
-                self.phase = .ready
-                // The tap that asked for the video is the tap that plays it: the fetch
-                // finishing is not a second decision the person has to make.
-                self.play()
-            } catch {
-                guard let self, !Task.isCancelled else { return }
-                self.phase = .unavailable(.unreadable)
             }
         }
 
@@ -549,6 +559,11 @@ final class VideoPlayback {
                 self.phase = .unavailable(.unreadable)
             }
         }
+
+        phase = .ready
+        // The tap that asked for the video is the tap that plays it: the fetch finishing
+        // is not a second decision the person has to make.
+        play()
     }
 
     private func seek(to time: TimeInterval) {

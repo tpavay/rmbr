@@ -39,7 +39,7 @@ final class SimulatedCloudVideoSource: VideoItemSource {
     func requestPlayerItem(
         identifier: String,
         progress: @escaping @MainActor (Double) -> Void,
-        deliver: @escaping @MainActor (Result<AVPlayerItem, VideoUnavailability>) -> Void
+        deliver: @escaping @MainActor (Result<PlayableVideo, VideoUnavailability>) -> Void
     ) -> Int {
         let requestID = nextRequestID
         nextRequestID += 1

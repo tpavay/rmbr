@@ -11,7 +11,7 @@ import Testing
 @MainActor
 final class StubVideoSource: VideoItemSource {
     enum Answer {
-        case item
+        case video
         case failure(VideoUnavailability)
         /// Report a download and then answer, all before returning.
         case progressThen(fractions: [Double], Result<Void, VideoUnavailability>)
@@ -19,7 +19,10 @@ final class StubVideoSource: VideoItemSource {
         case silence
     }
 
-    var answer: Answer = .item
+    var answer: Answer = .video
+    /// What the source says the video runs for. The real one reads this off the asset
+    /// before it delivers, so nothing downstream has to load anything.
+    var duration: TimeInterval = 12
     private(set) var requested: [String] = []
     private(set) var cancelled: [Int] = []
     private var nextID = 1
@@ -27,21 +30,21 @@ final class StubVideoSource: VideoItemSource {
     func requestPlayerItem(
         identifier: String,
         progress: @escaping @MainActor (Double) -> Void,
-        deliver: @escaping @MainActor (Result<AVPlayerItem, VideoUnavailability>) -> Void
+        deliver: @escaping @MainActor (Result<PlayableVideo, VideoUnavailability>) -> Void
     ) -> Int {
         requested.append(identifier)
         let requestID = nextID
         nextID += 1
         switch answer {
-        case .item:
-            deliver(.success(Self.playerItem()))
+        case .video:
+            deliver(.success(playable()))
         case .failure(let reason):
             deliver(.failure(reason))
         case .progressThen(let fractions, let outcome):
             for fraction in fractions { progress(fraction) }
             switch outcome {
             case .success:
-                deliver(.success(Self.playerItem()))
+                deliver(.success(playable()))
             case .failure(let reason):
                 deliver(.failure(reason))
             }
@@ -53,75 +56,14 @@ final class StubVideoSource: VideoItemSource {
 
     func cancel(_ requestID: Int) { cancelled.append(requestID) }
 
-    private static func playerItem() -> AVPlayerItem {
-        AVPlayerItem(url: TestVideo.url)
-    }
-}
-
-/// A real, tiny, playable video, written once per test run.
-///
-/// The rules under test are how many `AVPlayer`s exist and which audio session each state
-/// claims, and both of those only happen for a video that actually loads. Writing one is
-/// what keeps these tests on the same path the app takes, on a laptop, with no library.
-enum TestVideo {
-    static let url: URL = (try? write()) ?? URL(fileURLWithPath: "/dev/null")
-
-    private enum Failure: Error { case writerRefused }
-
-    private static func write() throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rmbr-fixture-\(UUID().uuidString).mov")
-        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: 160,
-            AVVideoHeightKey: 90
-        ])
-        input.expectsMediaDataInRealTime = false
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: input,
-            sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-            ]
+    /// A real `AVPlayer` is built on this, which is what makes the one-player rule
+    /// measurable. Nothing here ever asks it to decode, so the file behind it does not
+    /// have to exist - and a test must not depend on an encoder being available.
+    private func playable() -> PlayableVideo {
+        PlayableVideo(
+            item: AVPlayerItem(url: URL(fileURLWithPath: "/rmbr-test-video.mov")),
+            duration: duration
         )
-        writer.add(input)
-        guard writer.startWriting() else { throw Failure.writerRefused }
-        writer.startSession(atSourceTime: .zero)
-
-        // Two seconds at twelve frames a second, which is long enough that a test can
-        // assert on a video that is playing without racing its last frame.
-        for frame in 0..<24 {
-            // The writer takes a frame only when it says it is ready for one, and
-            // appending before then throws. A fixture this small is written by waiting
-            // rather than by wiring up a callback for twenty-four frames.
-            var waited = 0
-            while !input.isReadyForMoreMediaData, waited < 400 {
-                Thread.sleep(forTimeInterval: 0.005)
-                waited += 1
-            }
-            guard input.isReadyForMoreMediaData else { throw Failure.writerRefused }
-
-            var buffer: CVPixelBuffer?
-            CVPixelBufferCreate(nil, 160, 90, kCVPixelFormatType_32BGRA, nil, &buffer)
-            guard let buffer else { throw Failure.writerRefused }
-            CVPixelBufferLockBaseAddress(buffer, [])
-            if let base = CVPixelBufferGetBaseAddress(buffer) {
-                memset(base, Int32(frame * 10), CVPixelBufferGetDataSize(buffer))
-            }
-            CVPixelBufferUnlockBaseAddress(buffer, [])
-            guard adaptor.append(
-                buffer,
-                withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: 12)
-            ) else { throw Failure.writerRefused }
-        }
-
-        input.markAsFinished()
-        let finished = DispatchSemaphore(value: 0)
-        writer.finishWriting { finished.signal() }
-        guard finished.wait(timeout: .now() + 20) == .success,
-              writer.status == .completed
-        else { throw Failure.writerRefused }
-        return url
     }
 }
 
@@ -185,18 +127,6 @@ struct VideoPlaybackTests {
             eligibility: .eligible,
             selection: .selected
         )
-    }
-
-    /// Waits for the asset to load, which is what moves the viewer to `.ready`.
-    ///
-    /// Reaching `.ready` also starts the video: the tap that asked for it is the tap that
-    /// plays it, so there is no second decision to drive here.
-    private func played(_ playback: VideoPlayback) async {
-        for _ in 0..<400 {
-            if playback.phase == .ready { return }
-            if case .unavailable = playback.phase { return }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
     }
 
     // MARK: One player
@@ -266,12 +196,11 @@ struct VideoPlaybackTests {
     // MARK: The audio session
 
     @Test("Muted playback claims a session that mixes, and gives it back on pause")
-    func mutedPlaybackDoesNotTakeSomebodysMusic() async {
+    func mutedPlaybackDoesNotTakeSomebodysMusic() {
         let audio = RecordingAudioSession()
         let playback = VideoPlayback(source: StubVideoSource(), audio: audio)
         defer { playback.stop() }
         playback.open(video("muted"))
-        await played(playback)
 
         #expect(playback.phase == .ready)
         #expect(playback.isPlaying)
@@ -285,12 +214,11 @@ struct VideoPlaybackTests {
     }
 
     @Test("Unmuting is a different claim, and leaving hands the session back")
-    func unmutingClaimsAudibleAndLeavingRestores() async {
+    func unmutingClaimsAudibleAndLeavingRestores() {
         let audio = RecordingAudioSession()
         let playback = VideoPlayback(source: StubVideoSource(), audio: audio)
         defer { playback.stop() }
         playback.open(video("unmuted"))
-        await played(playback)
 
         playback.setMuted(false)
         #expect(!playback.isMuted)
@@ -301,12 +229,11 @@ struct VideoPlaybackTests {
     }
 
     @Test("Muting again while playing claims the mixing session back")
-    func mutingAgainReturnsToMixing() async {
+    func mutingAgainReturnsToMixing() {
         let audio = RecordingAudioSession()
         let playback = VideoPlayback(source: StubVideoSource(), audio: audio)
         defer { playback.stop() }
         playback.open(video("toggled"))
-        await played(playback)
 
         playback.setMuted(false)
         playback.setMuted(true)
@@ -314,7 +241,7 @@ struct VideoPlaybackTests {
     }
 
     @Test("Nothing plays until the person asks")
-    func nothingPlaysOnItsOwn() async {
+    func nothingPlaysOnItsOwn() {
         let audio = RecordingAudioSession()
         let playback = VideoPlayback(source: StubVideoSource(), audio: audio)
         defer { playback.stop() }
@@ -324,11 +251,10 @@ struct VideoPlaybackTests {
     }
 
     @Test("Sound the person asked for holds across the next video in the strip")
-    func theSoundChoiceSurvivesTheFilmAdvance() async {
+    func theSoundChoiceSurvivesTheFilmAdvance() {
         let playback = VideoPlayback(source: StubVideoSource(), audio: RecordingAudioSession())
         defer { playback.stop() }
         playback.open(video("first"))
-        await played(playback)
         playback.setMuted(false)
 
         playback.open(video("second"))
@@ -348,11 +274,10 @@ struct VideoPlaybackTests {
     }
 
     @Test("A video that ran to the end starts again rather than doing nothing")
-    func playingFromTheEndRestarts() async {
+    func playingFromTheEndRestarts() {
         let playback = VideoPlayback(source: StubVideoSource(), audio: RecordingAudioSession())
         defer { playback.stop() }
         playback.open(video("finished", seconds: 1))
-        await played(playback)
         playback.pause()
         playback.beginScrubbing()
         playback.scrub(to: playback.length)
@@ -425,7 +350,9 @@ struct VideoPlaybackTests {
 
     @Test("Scrubbing moves the playhead and is clamped to the video")
     func scrubbingStaysInsideTheVideo() {
-        let playback = VideoPlayback(source: StubVideoSource(), audio: RecordingAudioSession())
+        let source = StubVideoSource()
+        source.duration = 300
+        let playback = VideoPlayback(source: source, audio: RecordingAudioSession())
         defer { playback.stop() }
         playback.open(video("seekable", seconds: 300))
         playback.beginScrubbing()
