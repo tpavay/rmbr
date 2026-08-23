@@ -93,8 +93,6 @@ struct DayPageView: View {
         } action: { _, showing in
             guard showing != barIsShowing else { return }
             barIsShowing = showing
-            // The page changing state under the person's finger, once per crossing.
-            Haptics.soft()
         }
     }
 
