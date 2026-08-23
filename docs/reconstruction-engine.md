@@ -71,8 +71,10 @@ Every calendar day in it gets a Life row, not only the days that hold something.
 A day with captures gets its day row; a single empty day gets a row of its own; a run of two or more consecutive empty days collapses into one row that names the span and counts it.
 Time therefore runs continuously through the window and no day is unreachable, which it was not before: Life used to list only the days that held captures, so an empty day could be opened only from its month.
 The walk still stops at the library's first photograph rather than at the window's edge, so a person whose library starts last week does not scroll two years of empty rows.
-At the newest end it stops at today, except where a capture is dated after today - which one taken in a timezone ahead of the phone's is, because the index bins a capture by its own civil day - so a day that holds photographs is never dropped for not having happened yet.
-The month mosaic uses the same bound, and the month rule counts the day rows drawn beneath it rather than every indexed day in the month.
+At the newest end the current month's walk runs to today, or to the newest day of that month that holds captures where that day is later still - which happens because the index bins a capture by its own civil day, so one taken in a timezone ahead of the phone's can be dated after today.
+Within the months the window covers, then, a day is never dropped merely for being dated ahead of the phone's today.
+A capture whose own civil day falls beyond the current month is a different matter and is not addressed here: the window's months end at the current one, so that day lies outside them altogether and no surface reaches it.
+The month mosaic uses the same bound as the walk, and the month rule counts the day rows drawn beneath it rather than every indexed day in the month.
 
 Older months contribute at most one representative day each, chosen by an ordered cascade that stops at the first tier with a candidate and stores one reason code.
 A month whose days all fail the positive-signal gate stays visibly thin rather than promoting its least bad day.
