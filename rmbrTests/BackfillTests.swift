@@ -312,4 +312,21 @@ struct LifeEntryTests {
         }
         #expect(months == [Month(year: 2026, month: 8)])
     }
+
+    @Test("A library with no photographs at all produces no rows, so Life can show its empty state")
+    func anEmptyLibraryProducesNoEntries() {
+        let today = LocalDate(year: 2026, month: 8, day: 16)
+        let index = CaptureIndex(records: [], timeZone: Fixture.chicago)
+        let survey = ArchiveSurveyor.survey(index: index, tuning: .v1)
+        let monthEntries = ArchiveSurveyor.monthEntries(
+            index: index, survey: survey, today: today, tuning: .v1
+        )
+        let entries = LifeEntryBuilder.build(
+            index: index, monthEntries: monthEntries, today: today, tuning: .v1
+        )
+
+        // Zero rows, not twenty-four headers over twenty-four gap rows. This is what lets
+        // the narrowed-grant notice and its Choose photographs button render at all.
+        #expect(entries.count == 0)
+    }
 }

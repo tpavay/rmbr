@@ -40,23 +40,26 @@ enum LifeEntryBuilder {
         today: LocalDate,
         tuning: ReconstructionTuningProfile
     ) -> [LifeEntry] {
+        // Nothing is shown before the first photograph in the library: a person who
+        // started last week does not scroll through two years of empty days. With no
+        // photograph at all there is nothing to draw, and Life shows an empty state
+        // rather than two years of outlines standing in for a life it cannot see.
+        guard let earliest = index.earliestDate else { return [] }
+        let earliestMonth = Month(year: earliest.year, month: earliest.month)
+
         let policy = BackfillPolicy(tuning: tuning)
         let windowStart = policy.windowStart(today: today)
         var entries: [LifeEntry] = []
 
-        // Nothing is shown before the first photograph in the library: a person who
-        // started last week does not scroll through two years of empty days.
-        let earliestMonth = index.earliestDate.map { Month(year: $0.year, month: $0.month) }
-
         for month in policy.months(today: today).reversed() {
-            if let earliestMonth, month < earliestMonth { continue }
+            if month < earliestMonth { continue }
 
             let dates = Set(index.dates(in: month))
             let newestDay = lastDrawableDay(of: month, today: today, datesWithCaptures: dates)
             // The oldest day this month may show is its first, or the library's own first
             // day where that falls inside it.
             var oldestDay = 1
-            if let earliest = index.earliestDate, month == earliestMonth { oldestDay = earliest.day }
+            if month == earliestMonth { oldestDay = earliest.day }
             guard newestDay >= oldestDay else { continue }
 
             var rows: [LifeEntry] = []
