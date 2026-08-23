@@ -504,9 +504,26 @@ private struct MediaViewer: View {
     /// The viewer's one player. Every other frame is the still it already was.
     @State private var playback = VideoPlayback()
 
+    /// How far the strip has been pulled towards the day underneath it.
+    ///
+    /// Nothing but the finger writes this while a pull is in progress, so the frame goes
+    /// exactly where the thumb goes. Letting go either commits it or springs it back.
+    @State private var pull: CGSize = .zero
+    /// Whether this drag has been taken as a dismissal rather than a page turn.
+    @State private var isPulling = false
+
+    /// The travel that counts as the whole way down. The frame is at its smallest here,
+    /// and further pulling changes nothing.
+    private static let pullTravel: CGFloat = 260
+
     init(day: Day, startAt: MediaID) {
         self.day = day
         _current = State(initialValue: startAt)
+    }
+
+    /// How far down the dismissal is, from nothing to all the way.
+    private var pullProgress: Double {
+        min(1, max(0, Double(pull.height) / Double(Self.pullTravel)))
     }
 
     var body: some View {
@@ -515,8 +532,11 @@ private struct MediaViewer: View {
         let showing = index.map { references[$0] }
         let isVideo = showing?.kind == .video
         let transportIsShowing = isVideo && playback.phase == .ready
+        // The chrome goes before the frame does, so what is left under the thumb at the
+        // end of a pull is the photograph and nothing else.
+        let chromeOpacity = max(0, 1 - pullProgress * 2.4)
 
-        ZStack(alignment: .topTrailing) {
+        ZStack {
             Palette.deepInk.ignoresSafeArea()
 
             TabView(selection: $current) {
@@ -551,6 +571,13 @@ private struct MediaViewer: View {
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
+            // The strip is what the pull moves: it shrinks towards the day it came from
+            // and follows the thumb the whole way, rather than waiting at a threshold and
+            // then jumping. Scaling before offsetting keeps the offset in the screen's own
+            // points, so the frame stays under the finger at any size.
+            .scaleEffect(1 - pullProgress * 0.24, anchor: .center)
+            .offset(x: pull.width, y: pull.height)
+            .simultaneousGesture(pullDown)
 
             // Outside the strip on purpose: a control inside a page is a gesture
             // competing with the one that turns the page.
@@ -583,6 +610,7 @@ private struct MediaViewer: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
             .animation(.easeInOut(duration: 0.22), value: transportIsShowing)
+            .opacity(chromeOpacity)
 
             VStack(alignment: .leading, spacing: 16) {
                 if let index {
@@ -603,19 +631,14 @@ private struct MediaViewer: View {
             .padding(.horizontal, 22)
             .padding(.bottom, transportIsShowing ? 30 : 60)
             .animation(.easeInOut(duration: 0.22), value: transportIsShowing)
-
-            Button {
-                Haptics.soft()
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Palette.moonlightWhite)
-                    .padding(12)
-                    .background(Palette.smokedGlass, in: Circle())
-            }
-            .padding(16)
-            .accessibilityLabel("Close")
+            .opacity(chromeOpacity)
+        }
+        // There is no close button: the way out is to pull the frame down, which is what
+        // the rest of the platform does with a photograph shown full screen. VoiceOver
+        // cannot perform that pull, so the escape gesture is wired to the same exit.
+        .accessibilityAction(.escape) {
+            Haptics.soft()
+            dismiss()
         }
         // The densest haptic in the app fires from here, so the engine is warmed before
         // the first swipe rather than on it.
@@ -634,6 +657,54 @@ private struct MediaViewer: View {
             playback.pause()
         }
         .onDisappear { playback.stop() }
+    }
+
+    /// Pulling the frame down to put it back.
+    ///
+    /// `simultaneousGesture` rather than `gesture`, because the strip's own paging must
+    /// keep the horizontal drag it already owns: both recognise, and this one only takes
+    /// a drag that is decidedly downward. A page turn therefore never moves the frame
+    /// towards dismissal, and a pull never turns a page.
+    ///
+    /// It follows the thumb rather than waiting at a threshold, and letting go early
+    /// springs it back, so a pull that was not meant is answered by the frame returning
+    /// rather than by the day disappearing. The transport's own drag is a sibling above
+    /// this one and is untouched by it.
+    private var pullDown: some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                if !isPulling {
+                    // A sideways drag is the film advancing. Only a drag that is clearly
+                    // going down is taken as a way out.
+                    guard value.translation.height > 0,
+                          value.translation.height > abs(value.translation.width) * 1.4
+                    else { return }
+                    isPulling = true
+                }
+                pull = CGSize(
+                    // Sideways travel is damped rather than dropped: the frame stays under
+                    // the thumb without the pull turning into a page turn.
+                    width: value.translation.width / 3,
+                    height: max(0, value.translation.height)
+                )
+            }
+            .onEnded { value in
+                guard isPulling else { return }
+                isPulling = false
+                // Either far enough, or thrown hard enough to be going there anyway.
+                let committed = value.translation.height > 110
+                    || value.predictedEndTranslation.height > 320
+                guard committed else {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                        pull = .zero
+                    }
+                    return
+                }
+                // A screen changing state under the person's finger, which is the same
+                // impact the close button used to fire.
+                Haptics.soft()
+                dismiss()
+            }
     }
 
     /// A tap on the frame: the video's own request to start, or to stop.

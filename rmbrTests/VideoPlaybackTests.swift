@@ -66,6 +66,8 @@ final class StubVideoSource: VideoItemSource {
 enum TestVideo {
     static let url: URL = (try? write()) ?? URL(fileURLWithPath: "/dev/null")
 
+    private enum Failure: Error { case writerRefused }
+
     private static func write() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("rmbr-fixture-\(UUID().uuidString).mov")
@@ -83,25 +85,42 @@ enum TestVideo {
             ]
         )
         writer.add(input)
-        writer.startWriting()
+        guard writer.startWriting() else { throw Failure.writerRefused }
         writer.startSession(atSourceTime: .zero)
 
-        for frame in 0..<12 {
+        // Two seconds at twelve frames a second, which is long enough that a test can
+        // assert on a video that is playing without racing its last frame.
+        for frame in 0..<24 {
+            // The writer takes a frame only when it says it is ready for one, and
+            // appending before then throws. A fixture this small is written by waiting
+            // rather than by wiring up a callback for twenty-four frames.
+            var waited = 0
+            while !input.isReadyForMoreMediaData, waited < 400 {
+                Thread.sleep(forTimeInterval: 0.005)
+                waited += 1
+            }
+            guard input.isReadyForMoreMediaData else { throw Failure.writerRefused }
+
             var buffer: CVPixelBuffer?
             CVPixelBufferCreate(nil, 160, 90, kCVPixelFormatType_32BGRA, nil, &buffer)
-            guard let buffer else { break }
+            guard let buffer else { throw Failure.writerRefused }
             CVPixelBufferLockBaseAddress(buffer, [])
             if let base = CVPixelBufferGetBaseAddress(buffer) {
-                memset(base, Int32(frame * 16), CVPixelBufferGetDataSize(buffer))
+                memset(base, Int32(frame * 10), CVPixelBufferGetDataSize(buffer))
             }
             CVPixelBufferUnlockBaseAddress(buffer, [])
-            adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: 12))
+            guard adaptor.append(
+                buffer,
+                withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: 12)
+            ) else { throw Failure.writerRefused }
         }
 
         input.markAsFinished()
         let finished = DispatchSemaphore(value: 0)
         writer.finishWriting { finished.signal() }
-        finished.wait()
+        guard finished.wait(timeout: .now() + 20) == .success,
+              writer.status == .completed
+        else { throw Failure.writerRefused }
         return url
     }
 }
@@ -336,9 +355,10 @@ struct VideoPlaybackTests {
         await played(playback)
         playback.pause()
         playback.beginScrubbing()
-        playback.scrub(to: 1)
+        playback.scrub(to: playback.length)
         playback.endScrubbing()
-        #expect(playback.position == 1)
+        #expect(playback.length > 0)
+        #expect(playback.position == playback.length)
 
         playback.play()
         #expect(playback.position == 0)

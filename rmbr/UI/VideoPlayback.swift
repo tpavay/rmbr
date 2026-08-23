@@ -385,8 +385,11 @@ final class VideoPlayback {
     func play() {
         guard let player, phase == .ready else { return }
         // A video sitting on its last frame restarts rather than doing nothing, which is
-        // what a play control that stays visible has to mean.
+        // what a play control that stays visible has to mean. The playhead is moved here
+        // rather than left for the time observer to notice, so the transport does not
+        // show the end of a video that has gone back to the beginning.
         if length > 0, position >= length - 0.05 {
+            position = 0
             seek(to: 0)
         }
         audio.claim(audible: !isMuted)
