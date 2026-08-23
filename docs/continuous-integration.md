@@ -47,20 +47,32 @@ If a future image drops Xcode 26.3, `xcode-select` fails on the spot with a legi
 
 Build, then test. Never the single fused `xcodebuild test`.
 
-A simulator boot is the most expensive and least interesting thing in the run: measured cold
-on an M-series laptop, `test-without-building` takes 17.7 seconds, of which the 88-test suite
-itself is 0.85 seconds.
-Everything else is the simulator coming up.
-Splitting the phases means a change that does not parse, does not type-check, or violates
-Swift 6 concurrency is rejected by the compile step without a simulator ever having booted.
+Measured on this pipeline's own first two runs:
+
+| | green run | red run, one syntax error |
+| --- | --- | --- |
+| Select Xcode | under 1s | under 1s |
+| Build | 22s | 22s, failed |
+| Test | 129s | skipped, no simulator booted |
+| **Job total** | **2m 38s** | **28s** |
+
+A simulator boot is the most expensive and least interesting thing in the run.
+In the green run the test step took 129 seconds, of which roughly 86 passed before the first
+test executed at all: creating the device, booting it, installing the app, launching the test
+host.
+Executing all 88 tests took about 35 seconds on the runner, against 0.85 seconds on an
+M-series laptop.
+
+Splitting build from test is what makes the red column of that table possible.
+A change that does not parse, does not type-check, or violates Swift 6 concurrency is rejected
+in 28 seconds rather than 158, and no simulator is ever booted on its behalf.
 
 That is also the honest answer to "make the cheapest thing that can fail, fail first."
 For this repository the compile *is* the cheapest thing that can fail, and there is nothing
 worth putting in front of it.
-A separate pre-flight job on a Linux runner would add its own queue and checkout, roughly 15
-seconds, to the critical path of every green run, in order to save about two minutes on the
-minority of runs that are broken at the syntax level.
-At a 5% failure rate that trades 15 seconds of certain cost for 6 seconds of expected saving.
+A pre-flight job on a Linux runner would spend its own queue and checkout, roughly 15 seconds,
+on the critical path of every green run, in order to shave at most a few seconds off a
+time-to-red that is already 28 seconds, and the macOS job would still have to run afterwards.
 It is a worse pipeline that looks like a better one.
 
 ## What it costs
@@ -71,10 +83,12 @@ and each job is rounded up to a whole minute.
 Included allowance is 2,000 minutes a month on GitHub Free and 3,000 on Pro, and standard
 runners are free in public repositories.
 
-Measured on the first real run of this workflow, the job takes about **2 minutes** wall clock,
-so roughly **$0.12** per run at list price.
-Locally the same work is 6.9 seconds to build and 17.7 seconds to test; the gap is runner
-startup, a cold filesystem, and simulator boot, not the project.
+So a green run occupies the runner for 2 minutes 38 seconds, bills 3 minutes, and costs about
+**$0.19**.
+A run rejected at the build step bills 1 minute and costs about **$0.06**.
+The same work on a laptop is 6.9 seconds to build and 17.7 seconds to test; the runner is
+several times slower per unit of work and pays about 86 seconds of simulator startup that a
+warm laptop does not.
 
 Three things keep that number from growing:
 
@@ -82,11 +96,22 @@ Three things keep that number from growing:
   pays for one run, not three. It is deliberately *not* applied to `main`, because with no
   branch protection available on this plan (see below) the `main` run is the only thing that
   reports whether `main` is green, and superseding it would throw that away.
-- **`timeout-minutes: 20`.** A healthy run is two minutes. The default job timeout is six
-  hours, which at the macOS rate is about $22 for one wedged simulator. This bound is a cost
-  control, not a performance target.
+- **`timeout-minutes: 20`.** A healthy run is under three minutes. The default job timeout is
+  six hours, which at the macOS rate is about $22 for one wedged simulator. This bound is a
+  cost control, not a performance target.
 - **No larger runners.** Included minutes cannot be spent on them at all, and they are billed
   even in public repositories.
+
+## Proof that it works, in both directions
+
+A workflow that has only ever gone green has not been tested. Both of these ran on the pull
+request that introduced this file:
+
+- **Green.** Run `32649998989`: 2m 38s, 88 tests in 15 suites passed.
+- **Red.** Run `32650222909`: a one-line syntax error pushed deliberately. The build step
+  failed after 22 seconds, the test step was **skipped**, the whole job took 28 seconds, and
+  `xcbeautify --renderer github-actions` annotated the offending line inline in the diff with
+  `Expected initial value after '='`. The commit was then removed from the branch.
 
 ## Caching: none, on purpose
 
