@@ -105,6 +105,20 @@ enum DayFormatting {
         return "\(seconds) sec"
     }
 
+    /// A playhead reading on the video transport.
+    ///
+    /// Truncated rather than rounded, and separate from `duration` on purpose: "8 sec" is
+    /// how long a video is, and `0:08` is where in it you are. A position rounded up would
+    /// name a second the video has not reached.
+    static func clock(_ interval: TimeInterval) -> String {
+        let total = interval.isFinite ? max(0, Int(interval)) : 0
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let seconds = total % 60
+        if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, seconds) }
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+
     /// How a moment states its own extent.
     ///
     /// A capture floor is printed as a floor and never as time spent somewhere: the

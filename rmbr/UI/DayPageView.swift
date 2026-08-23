@@ -486,14 +486,23 @@ private struct MomentRow: View {
 /// Frames on a strip with black between them, arriving with a slight tilt: these were
 /// shot, not stored. One rigid impact per frame, which is deliberately the densest
 /// haptic in the app.
+///
+/// A video is one more frame on the same strip rather than a screen of its own, and it
+/// plays where it sits. The strip keeps its neighbours alive, so the player does not
+/// belong to a frame: the viewer owns exactly one and points it at whichever frame is
+/// showing. Advancing the film takes it away again.
 private struct MediaViewer: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.scenePhase) private var scenePhase
     let day: Day
 
     /// Seeded where the person opened it, rather than settled in `onAppear`: arriving on
     /// the frame they tapped is not the film advancing, and it must not sound like it.
     @State private var current: MediaID
+
+    /// The viewer's one player. Every other frame is the still it already was.
+    @State private var playback = VideoPlayback()
 
     init(day: Day, startAt: MediaID) {
         self.day = day
@@ -503,22 +512,38 @@ private struct MediaViewer: View {
     var body: some View {
         let references = day.media.eligibleMediaIDs.compactMap { day.media($0) }
         let index = references.firstIndex { $0.id == current }
+        let showing = index.map { references[$0] }
+        let isVideo = showing?.kind == .video
+        let transportIsShowing = isVideo && playback.phase == .ready
+
         ZStack(alignment: .topTrailing) {
             Palette.deepInk.ignoresSafeArea()
 
             TabView(selection: $current) {
                 ForEach(references) { reference in
                     GeometryReader { proxy in
-                        MediaThumbnail(
-                            reference: reference,
-                            targetSize: frameTarget(for: reference, fitting: proxy.size),
-                            allowNetwork: true
-                        )
+                        ZStack {
+                            MediaThumbnail(
+                                reference: reference,
+                                targetSize: frameTarget(for: reference, fitting: proxy.size),
+                                allowNetwork: true,
+                                showsVideoBadge: false
+                            )
+                            // The video draws over the still it was standing in for, in
+                            // the same box, so the frame never changes shape as it starts.
+                            if playback.holds(reference), let player = playback.player {
+                                VideoSurface(player: player)
+                            }
+                        }
                         .aspectRatio(reference.aspectRatio, contentMode: .fit)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                         // The tilt is the film advance: each frame arrives with weight.
                         .rotationEffect(.degrees(reference.id == current ? 0 : -0.6))
                         .animation(.rmbr, value: current)
+                        .contentShape(Rectangle())
+                        // The whole frame is the target, so a video does not have to be
+                        // hit on its button to start or stop.
+                        .onTapGesture { tapped(reference) }
                     }
                     .padding(.horizontal, 8)
                     .tag(reference.id)
@@ -527,19 +552,57 @@ private struct MediaViewer: View {
             .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 2) {
+            // Outside the strip on purpose: a control inside a page is a gesture
+            // competing with the one that turns the page.
+            if let showing, isVideo {
+                VideoFrameControl(
+                    phase: playback.phase,
+                    onPlay: { start(showing) },
+                    onRetry: { playback.retry() }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(playback.phase != .ready)
+            }
+
+            // A frame that fills the screen puts the caption - and now a transport - on
+            // top of the photograph, where a bright bottom edge makes both unreadable.
+            // The hero's answer, applied here: the ink this screen is already made of,
+            // lifted only as far as the words reach.
+            LinearGradient(
+                colors: [
+                    Palette.deepInk.opacity(0.92),
+                    Palette.deepInk.opacity(0.42),
+                    .clear
+                ],
+                startPoint: .bottom,
+                endPoint: .top
+            )
+            .frame(height: transportIsShowing ? 230 : 170)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .animation(.easeInOut(duration: 0.22), value: transportIsShowing)
+
+            VStack(alignment: .leading, spacing: 16) {
                 if let index {
-                    Text(DayFormatting.time(references[index].captureTime, in: day.id.timeZone))
-                        .font(.editorial(17))
-                        .foregroundStyle(Palette.moonlightWhite)
-                    Text(caption(for: references[index], at: index, of: references.count))
-                        .font(.utility(11.5))
-                        .foregroundStyle(Palette.moonlightWhite.opacity(0.8))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(DayFormatting.time(references[index].captureTime, in: day.id.timeZone))
+                            .font(.editorial(17))
+                            .foregroundStyle(Palette.moonlightWhite)
+                        Text(caption(for: references[index], at: index, of: references.count))
+                            .font(.utility(11.5))
+                            .foregroundStyle(Palette.moonlightWhite.opacity(0.8))
+                    }
+                }
+                if transportIsShowing {
+                    VideoTransport(playback: playback)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             .padding(.horizontal, 22)
-            .padding(.bottom, 60)
+            .padding(.bottom, transportIsShowing ? 30 : 60)
+            .animation(.easeInOut(duration: 0.22), value: transportIsShowing)
 
             Button {
                 Haptics.soft()
@@ -557,8 +620,39 @@ private struct MediaViewer: View {
         // The densest haptic in the app fires from here, so the engine is warmed before
         // the first swipe rather than on it.
         .onAppear { Haptics.prepare() }
-        // One per frame: the shutter feeling the transition is named for.
-        .onChange(of: current) { _, _ in Haptics.rigid() }
+        // One per frame: the shutter feeling the transition is named for. The film
+        // advancing takes the player with it - sound included - because the person who
+        // swiped away is not coming back to the same second.
+        .onChange(of: current) { _, _ in
+            Haptics.rigid()
+            playback.stop()
+        }
+        // rmbr declares no background audio, so a video that keeps running while the
+        // person is somewhere else would be a session held for nothing.
+        .onChange(of: scenePhase) { _, phase in
+            guard phase != .active else { return }
+            playback.pause()
+        }
+        .onDisappear { playback.stop() }
+    }
+
+    /// A tap on the frame: the video's own request to start, or to stop.
+    private func tapped(_ reference: MediaReference) {
+        guard reference.id == current, reference.kind == .video else { return }
+        switch playback.phase {
+        case .ready where playback.holds(reference):
+            Haptics.soft()
+            playback.togglePlayback()
+        case .idle:
+            start(reference)
+        default:
+            break
+        }
+    }
+
+    private func start(_ reference: MediaReference) {
+        Haptics.soft()
+        playback.open(reference)
     }
 
     /// The pixels one frame actually draws.
@@ -578,6 +672,11 @@ private struct MediaViewer: View {
         if let moment = day.moments.first(where: { $0.allMediaIDs.contains(reference.id) }),
            let label = moment.place?.label.knownValue {
             parts.append(label.text)
+        }
+        // How long a video runs is a fact about the capture, so it is stated where this
+        // screen states facts rather than badged onto the picture.
+        if reference.kind == .video, let duration = reference.duration {
+            parts.append(DayFormatting.duration(duration))
         }
         parts.append("\(index + 1) of \(total)")
         return parts.joined(separator: " · ")
