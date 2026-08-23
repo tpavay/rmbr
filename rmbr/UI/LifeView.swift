@@ -401,6 +401,16 @@ private struct EmptyMonthRow: View {
 
 // MARK: - The calendar glyph
 
+/// The climb, and the same climb on every screen it appears on.
+///
+/// It always means up one altitude: in Life it lifts you from days to a month, in the
+/// month it lifts you from a month to the years. It was once a light in the month header
+/// saying which screen you were on, which read as a second calendar button one screen
+/// after tapping a calendar button that worked, and was inert (#4).
+///
+/// `isActive` is kept for the ember treatment and is currently unused by either caller,
+/// because ember belongs to today on both screens and two ember marks on one screen would
+/// make one of them wrong.
 struct CalendarGlyph: View {
     var isActive: Bool
 

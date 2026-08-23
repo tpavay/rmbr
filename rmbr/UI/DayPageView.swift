@@ -520,7 +520,7 @@ private struct MediaViewer: View {
                         .frame(width: proxy.size.width, height: proxy.size.height)
                         // The tilt is the film advance: each frame arrives with weight.
                         .rotationEffect(.degrees(reference.id == current ? 0 : -0.6))
-                        .animation(.spring(response: 0.42, dampingFraction: 0.86), value: current)
+                        .animation(.rmbr, value: current)
                     }
                     .padding(.horizontal, 8)
                     .tag(reference.id)
