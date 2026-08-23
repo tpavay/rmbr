@@ -73,13 +73,16 @@ struct LifeView: View {
             FailedView(message: message)
 
         case .ready:
-            if model.lifeEntries.isEmpty {
-                VStack(spacing: 0) {
-                    chrome
+            // The chrome sits above the scroll rather than inside it, so the calendar -
+            // and the long press that reaches diagnostics - is there at any scroll
+            // position rather than only at the top.
+            VStack(spacing: 0) {
+                chrome
+                if model.lifeEntries.isEmpty {
                     EmptyLibraryNotice(access: model.access, onChoose: { model.presentLimitedPicker() })
+                } else {
+                    scroll
                 }
-            } else {
-                scroll
             }
         }
     }
@@ -89,9 +92,9 @@ struct LifeView: View {
     private var scroll: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
-                chrome
-                // Sections rather than a flat list, so the month rule pins under the
-                // wordmark and is pushed off by the next one instead of scrolling away.
+                // Sections rather than a flat list, so the month rule pins to the top of
+                // the scroll - directly under the wordmark, which the scroll starts below
+                // - and is pushed off by the next one instead of scrolling away.
                 ForEach(months, id: \.header.id) { section in
                     Section {
                         ForEach(section.rows) { entry in
@@ -137,11 +140,11 @@ struct LifeView: View {
         switch entry {
         case .monthHeader(let month, let subtitle):
             MonthRule(month: month, subtitle: subtitle)
-        case .day(let date, let treatment):
+        case .day(let date, _):
             NavigationLink {
                 DayPageView(date: date)
             } label: {
-                DayCard(date: date, treatment: treatment)
+                DayCard(date: date)
             }
             .buttonStyle(.plain)
             .simultaneousGesture(TapGesture().onEnded { Haptics.soft() })
@@ -167,9 +170,13 @@ struct LifeView: View {
     }
 
     private static let preheatWindow = "life"
-    private static let coverTargetSize = CGSize(width: 900, height: 900)
     /// Rows either side of what is visible that are worth having decoded already.
-    private static let preheatMargin = 6
+    ///
+    /// A cover is the largest thing Life decodes, so this is deliberately smaller than a
+    /// screenful: a wider margin asks PhotoKit to hold more pixels than the whole
+    /// thumbnail budget, which costs the covers already on screen rather than saving
+    /// anything.
+    private static let preheatMargin = 3
 
     private func preheatCovers(around visibleIDs: [String]) {
         let entries = model.lifeEntries
@@ -187,12 +194,16 @@ struct LifeView: View {
         }
         thumbnails.preheat(
             references,
-            targetSize: Self.coverTargetSize,
+            targetSize: lifeCoverTargetSize,
             window: Self.preheatWindow
         )
     }
 
-    /// The month the rule is showing, and the one the calendar button opens.
+    /// The month whose rule is pinned at the top of the scroll.
+    ///
+    /// The calendar sits above the scroll rather than in it, so this is what the button
+    /// opens whatever the person has scrolled to, and not merely what it was when they
+    /// were last near the top.
     private func announceMonth(for visibleIDs: [String]) {
         let entries = model.lifeEntries
         let visible = Set(visibleIDs)
@@ -213,6 +224,14 @@ struct LifeView: View {
 }
 
 // MARK: - Rows
+
+/// The pixels a cover actually draws, on the widest screen rmbr runs on.
+///
+/// A card is the width of the screen less its 20pt margins by 228pt tall, which is 1200
+/// by 684 at 3x on a 440pt-wide phone. The preheat and the card ask for the same size on
+/// purpose: a difference of one pixel is a different cache key, and the preheated copy
+/// would then be decoded for nobody.
+private let lifeCoverTargetSize = CGSize(width: 1200, height: 684)
 
 private struct MonthRule: View {
     let month: Month
@@ -238,7 +257,6 @@ private struct MonthRule: View {
 private struct DayCard: View {
     @Environment(LibraryModel.self) private var model
     let date: LocalDate
-    let treatment: BackfillTreatment
 
     var body: some View {
         let day = model.day(for: date)
@@ -246,7 +264,7 @@ private struct DayCard: View {
         ZStack(alignment: .bottomLeading) {
             Group {
                 if let coverID = day.media.coverMediaID, let reference = day.media(coverID) {
-                    MediaThumbnail(reference: reference, targetSize: CGSize(width: 900, height: 900))
+                    MediaThumbnail(reference: reference, targetSize: lifeCoverTargetSize)
                 } else {
                     Rectangle().fill(Palette.smokedGlass)
                 }
@@ -304,7 +322,6 @@ private struct EmptyDayCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Spacer(minLength: 0)
             Text(DayFormatting.heading(for: date, today: today))
                 .font(.editorial(22))
                 .foregroundStyle(Palette.moonlightWhite.opacity(0.6))
@@ -312,10 +329,12 @@ private struct EmptyDayCard: View {
                 .font(.utility(11))
                 .foregroundStyle(Palette.dustyZinc)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 228, alignment: .bottomLeading)
+        // The padding sits inside the frame, exactly as a day card's does, so the dashed
+        // border encloses 228pt and not a point more.
         .padding(.horizontal, 15)
         .padding(.bottom, 13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 228, alignment: .bottomLeading)
         .overlay {
             RoundedRectangle(cornerRadius: 16)
                 .strokeBorder(

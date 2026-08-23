@@ -1,5 +1,23 @@
 import SwiftUI
 
+/// The first screen the day owns, before anything is scrolled.
+private let heroHeight: CGFloat = 452
+
+/// What a thumbnail on the rail is fetched at.
+///
+/// The preheat and the cell ask for this same value, because a different size is a
+/// different cache key and the preheated copy would then be decoded for nobody.
+private let dayGridTargetSize = CGSize(width: 600, height: 600)
+
+/// The hero title fades as the glass bar takes over, so the date is never printed twice.
+private func heroTitleOpacity(atScrollOffset offset: CGFloat) -> Double {
+    let start = heroHeight - 210
+    let end = heroHeight - 130
+    guard offset > start else { return 1 }
+    guard offset < end else { return 0 }
+    return 1 - Double((offset - start) / (end - start))
+}
+
 /// One day: a hero, then a rail of moments, then the figures.
 ///
 /// The cover owns the first screen and hands its date to a glass bar as you scroll. The
@@ -13,12 +31,12 @@ struct DayPageView: View {
     let date: LocalDate
 
     @State private var viewerMediaID: MediaID?
-    @State private var scrolled: CGFloat = 0
-    /// Fires the hand-off haptic once per crossing rather than once per frame.
+    /// The only thing the scroll writes into view state, and it changes twice a page.
+    ///
+    /// The parallax and the title fade read their own geometry through `visualEffect`
+    /// instead: an offset held here would rebuild the whole page - every moment, every
+    /// grid - on every frame of the scroll.
     @State private var barIsShowing = false
-
-    private static let gridTargetSize = CGSize(width: 600, height: 600)
-    private static let heroHeight: CGFloat = 452
 
     var body: some View {
         content
@@ -70,16 +88,13 @@ struct DayPageView: View {
             .padding(.bottom, 40)
         }
         .ignoresSafeArea(edges: .top)
-        .onScrollGeometryChange(for: CGFloat.self) { geometry in
-            geometry.contentOffset.y + geometry.contentInsets.top
-        } action: { _, offset in
-            scrolled = offset
-            let showing = offset > Self.heroHeight - 150
-            if showing != barIsShowing {
-                barIsShowing = showing
-                // The page changing state under the person's finger, once per crossing.
-                Haptics.soft()
-            }
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            geometry.contentOffset.y + geometry.contentInsets.top > heroHeight - 150
+        } action: { _, showing in
+            guard showing != barIsShowing else { return }
+            barIsShowing = showing
+            // The page changing state under the person's finger, once per crossing.
+            Haptics.soft()
         }
     }
 
@@ -92,13 +107,30 @@ struct DayPageView: View {
             Group {
                 if let cover {
                     MediaThumbnail(reference: cover, targetSize: CGSize(width: 1400, height: 1800))
-                        .scaleEffect(1 + max(0, -scrolled) / 900)
+                        // The parallax reads the hero's own position rather than a stored
+                        // offset, so pulling the page down costs a redraw and not a
+                        // rebuild of everything below it.
+                        .visualEffect { content, proxy in
+                            content.scaleEffect(
+                                1 + max(0, proxy.frame(in: .scrollView(axis: .vertical)).minY) / 900
+                            )
+                        }
+                        // The photograph the day opens on is the one thing on this screen
+                        // a tap does something with, so it says so.
+                        .accessibilityElement()
+                        .accessibilityAddTraits(.isImage)
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityLabel(coverLabel(for: cover, in: day))
+                        .accessibilityAction {
+                            Haptics.rigid()
+                            viewerMediaID = cover.id
+                        }
                 } else {
                     Rectangle().fill(Palette.smokedGlass)
                 }
             }
             .frame(maxWidth: .infinity)
-            .frame(height: Self.heroHeight)
+            .frame(height: heroHeight)
             .clipped()
 
             LinearGradient(
@@ -110,7 +142,8 @@ struct DayPageView: View {
                 startPoint: .bottom,
                 endPoint: .top
             )
-            .frame(height: Self.heroHeight)
+            .frame(height: heroHeight)
+            .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 7) {
                 Text(DayFormatting.heading(for: date, today: model.today))
@@ -126,9 +159,18 @@ struct DayPageView: View {
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
-            .opacity(titleOpacity)
+            // Given the hero's own height, so the fade reads the same top edge the
+            // parallax does and an unresolved frame leaves the title showing.
+            .frame(height: heroHeight, alignment: .bottomLeading)
+            .visualEffect { content, proxy in
+                content.opacity(
+                    heroTitleOpacity(
+                        atScrollOffset: -proxy.frame(in: .scrollView(axis: .vertical)).minY
+                    )
+                )
+            }
         }
-        .frame(height: Self.heroHeight)
+        .frame(height: heroHeight)
         .contentShape(Rectangle())
         .onTapGesture {
             if let cover {
@@ -138,13 +180,20 @@ struct DayPageView: View {
         }
     }
 
-    /// The hero title fades as the glass bar takes over, so the date is never printed twice.
-    private var titleOpacity: Double {
-        let start = Self.heroHeight - 210
-        let end = Self.heroHeight - 130
-        guard scrolled > start else { return 1 }
-        guard scrolled < end else { return 0 }
-        return 1 - Double((scrolled - start) / (end - start))
+    /// What the hero photograph is, for somebody who cannot see it.
+    private func coverLabel(for cover: MediaReference, in day: Day) -> String {
+        var parts: [String] = [cover.kind == .video ? "Video" : "Photo"]
+        parts.append(DayFormatting.time(cover.captureTime, in: day.id.timeZone))
+        if let moment = day.moments.first(where: { $0.allMediaIDs.contains(cover.id) }),
+           let label = moment.place?.label.knownValue {
+            parts.append(label.text)
+        }
+        if let duration = cover.duration { parts.append(DayFormatting.duration(duration)) }
+        let eligible = day.media.eligibleMediaIDs
+        if let ordinal = eligible.firstIndex(of: cover.id) {
+            parts.append("\(ordinal + 1) of \(eligible.count)")
+        }
+        return parts.joined(separator: ", ")
     }
 
     private var navigationBar: some View {
@@ -194,7 +243,7 @@ struct DayPageView: View {
         }
         thumbnails.preheat(
             identifiers.compactMap { day.media($0) },
-            targetSize: Self.gridTargetSize,
+            targetSize: dayGridTargetSize,
             window: preheatWindow
         )
     }
@@ -386,7 +435,7 @@ private struct MomentRow: View {
                                     .overlay {
                                         MediaThumbnail(
                                             reference: reference,
-                                            targetSize: CGSize(width: 600, height: 600)
+                                            targetSize: dayGridTargetSize
                                         )
                                     }
                                     .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -441,29 +490,36 @@ private struct MomentRow: View {
 /// haptic in the app.
 private struct MediaViewer: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.displayScale) private var displayScale
     let day: Day
-    let startAt: MediaID
 
-    @State private var current: MediaID?
+    /// Seeded where the person opened it, rather than settled in `onAppear`: arriving on
+    /// the frame they tapped is not the film advancing, and it must not sound like it.
+    @State private var current: MediaID
+
+    init(day: Day, startAt: MediaID) {
+        self.day = day
+        _current = State(initialValue: startAt)
+    }
 
     var body: some View {
         let references = day.media.eligibleMediaIDs.compactMap { day.media($0) }
-        let index = references.firstIndex { $0.id == (current ?? startAt) }
+        let index = references.firstIndex { $0.id == current }
         ZStack(alignment: .topTrailing) {
             Palette.deepInk.ignoresSafeArea()
 
-            TabView(selection: Binding(get: { current ?? startAt }, set: { current = $0 })) {
+            TabView(selection: $current) {
                 ForEach(references) { reference in
                     GeometryReader { proxy in
                         MediaThumbnail(
                             reference: reference,
-                            targetSize: CGSize(width: 2400, height: 2400),
+                            targetSize: frameTarget(for: reference, fitting: proxy.size),
                             allowNetwork: true
                         )
                         .aspectRatio(reference.aspectRatio, contentMode: .fit)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                         // The tilt is the film advance: each frame arrives with weight.
-                        .rotationEffect(.degrees(reference.id == (current ?? startAt) ? 0 : -0.6))
+                        .rotationEffect(.degrees(reference.id == current ? 0 : -0.6))
                         .animation(.spring(response: 0.42, dampingFraction: 0.86), value: current)
                     }
                     .padding(.horizontal, 8)
@@ -500,9 +556,23 @@ private struct MediaViewer: View {
             .padding(16)
             .accessibilityLabel("Close")
         }
-        .onAppear { if current == nil { current = startAt } }
+        // The densest haptic in the app fires from here, so the engine is warmed before
+        // the first swipe rather than on it.
+        .onAppear { Haptics.prepare() }
         // One per frame: the shutter feeling the transition is named for.
         .onChange(of: current) { _, _ in Haptics.rigid() }
+    }
+
+    /// The pixels one frame actually draws.
+    ///
+    /// The frame is fitted into the screen, so this is the capture at that fitted size
+    /// and no larger. A square target big enough for the tallest photograph asks for
+    /// three times these pixels for a landscape one, and a single frame that size evicts
+    /// every cover Life is holding.
+    private func frameTarget(for reference: MediaReference, fitting size: CGSize) -> CGSize {
+        let ratio = reference.aspectRatio > 0 ? reference.aspectRatio : 1
+        let width = min(size.width, size.height * ratio)
+        return CGSize(width: width * displayScale, height: width / ratio * displayScale)
     }
 
     private func caption(for reference: MediaReference, at index: Int, of total: Int) -> String {

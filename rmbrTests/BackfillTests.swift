@@ -241,6 +241,49 @@ struct LifeEntryTests {
         #expect(!hasGap)
     }
 
+    @Test("A day dated after today still gets a row, and the rule counts the rows it drew")
+    func aDayAheadOfTodayIsNotDropped() {
+        let today = LocalDate(year: 2026, month: 8, day: 16)
+        let tokyo = TimeZone(identifier: "Asia/Tokyo")!
+        let records = [
+            Fixture.capture(
+                "10:00:00", on: LocalDate(year: 2026, month: 8, day: 15),
+                in: Fixture.chicago, identifier: "home"
+            ),
+            // Shot in a zone far enough ahead of the phone's that its own civil day is
+            // already the 17th while the phone is still on the 16th.
+            Fixture.capture(
+                "08:00:00", on: LocalDate(year: 2026, month: 8, day: 17),
+                in: tokyo, identifier: "ahead"
+            )
+        ]
+        let index = CaptureIndex(records: records, timeZone: Fixture.chicago)
+        let survey = ArchiveSurveyor.survey(index: index, tuning: .v1)
+        let entries = LifeEntryBuilder.build(
+            index: index,
+            monthEntries: ArchiveSurveyor.monthEntries(
+                index: index, survey: survey, today: today, tuning: .v1
+            ),
+            today: today,
+            tuning: .v1
+        )
+
+        let days = entries.compactMap { entry -> LocalDate? in
+            if case .day(let date, _) = entry { return date }
+            return nil
+        }
+        #expect(days.first == LocalDate(year: 2026, month: 8, day: 17))
+        #expect(days.count == 2)
+
+        let subtitle = entries.compactMap { entry -> String? in
+            if case .monthHeader(let month, let subtitle) = entry,
+               month == Month(year: 2026, month: 8) { return subtitle }
+            return nil
+        }.first
+        // Two rows drawn, so the rule says two days and never three.
+        #expect(subtitle == "2 days")
+    }
+
     @Test("Life stops at the library's first photograph rather than at the window")
     func nothingBeforeTheFirstPhotograph() {
         let today = LocalDate(year: 2026, month: 8, day: 4)

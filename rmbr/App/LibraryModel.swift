@@ -195,7 +195,6 @@ final class LibraryModel {
     /// ledger held when it started, so a pass that ran across a newer answer describes
     /// names that have since been superseded and must not be committed over them.
     private var ledgerRevision = 0
-    private var representativeDates: Set<LocalDate> = []
     private var placeRequestsInFlight: Set<String> = []
     /// Coordinates whose newly stored labels the cached days do not carry yet, and
     /// whether a pass is already draining them. One pass at a time is what stops two
@@ -329,7 +328,6 @@ final class LibraryModel {
         lifeEntries = []
         monthEntries = []
         signalsByDate = [:]
-        representativeDates = []
         placeAttributions = []
         composedDayCount = 0
         composeSeconds = 0
@@ -523,11 +521,6 @@ final class LibraryModel {
             survey: survey,
             today: today,
             tuning: tuning
-        )
-        representativeDates = Set(
-            monthEntries.compactMap {
-                if case .representative(let value) = $0 { value.date } else { nil }
-            }
         )
         lifeEntries = LifeEntryBuilder.build(
             index: index,
@@ -723,14 +716,6 @@ final class LibraryModel {
         )
     }
 
-    func treatment(for date: LocalDate) -> BackfillTreatment {
-        BackfillPolicy(tuning: tuning).treatment(
-            for: date,
-            today: today,
-            representatives: representativeDates
-        )
-    }
-
     /// Fetches any place labels this day wants and recomposes it once they land.
     ///
     /// A reverse-geocode is the only thing rmbr ever sends off the device, so it is asked
@@ -896,14 +881,6 @@ final class LibraryModel {
 
     // MARK: - Life
 
-    /// Every date with captures in a month, for the month destination.
-    ///
-    /// Opening a month composes its days on demand; it never injects them into Life
-    /// (RQ-069).
-    func dates(in month: Month) -> [LocalDate] {
-        (index?.dates(in: month) ?? []).sorted(by: >)
-    }
-
     /// Opens the system picker that widens a narrowed grant.
     ///
     /// The one place rmbr asks for anything: with limited access and nothing chosen
@@ -926,12 +903,15 @@ final class LibraryModel {
     /// Every calendar day in a month, oldest first.
     ///
     /// The mosaic shows the days that hold nothing as well as the days that do, so it
-    /// cannot be built from the index alone. The current month stops at today: rmbr does
-    /// not draw squares for days that have not happened.
+    /// cannot be built from the index alone. It stops where Life's walk stops - at today
+    /// in the current month, or at a capture dated later than today - so the two surfaces
+    /// can never disagree about which days exist.
     func calendarDates(in month: Month) -> [LocalDate] {
-        let today = today
-        let isCurrentMonth = month == Month(year: today.year, month: today.month)
-        let last = isCurrentMonth ? today.day : LifeEntryBuilder.daysIn(month)
+        let last = LifeEntryBuilder.lastDrawableDay(
+            of: month,
+            today: today,
+            datesWithCaptures: index?.dates(in: month) ?? []
+        )
         guard last >= 1 else { return [] }
         return (1...last).map { LocalDate(year: month.year, month: month.month, day: $0) }
     }

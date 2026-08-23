@@ -47,22 +47,20 @@ enum LifeEntryBuilder {
         // Nothing is shown before the first photograph in the library: a person who
         // started last week does not scroll through two years of empty days.
         let earliestMonth = index.earliestDate.map { Month(year: $0.year, month: $0.month) }
-        let currentMonth = Month(year: today.year, month: today.month)
 
         for month in policy.months(today: today).reversed() {
             if let earliestMonth, month < earliestMonth { continue }
 
             let dates = Set(index.dates(in: month))
-            // The newest day this month may show is today in the current month, and the
-            // last of the month before it. The oldest is the first day of the month, or
-            // the library's own first day where that falls inside it.
-            let newestDay = month == currentMonth ? today.day : daysIn(month)
+            let newestDay = lastDrawableDay(of: month, today: today, datesWithCaptures: dates)
+            // The oldest day this month may show is its first, or the library's own first
+            // day where that falls inside it.
             var oldestDay = 1
             if let earliest = index.earliestDate, month == earliestMonth { oldestDay = earliest.day }
             guard newestDay >= oldestDay else { continue }
 
-            entries.append(.monthHeader(month, subtitle: subtitle(forDaysWithCaptures: dates.count)))
-
+            var rows: [LifeEntry] = []
+            var daysDrawn = 0
             var runNewest: Int?
             var runOldest: Int?
 
@@ -70,10 +68,10 @@ enum LifeEntryBuilder {
                 guard let runNewest, let runOldest else { return }
                 let newest = LocalDate(year: month.year, month: month.month, day: runNewest)
                 if runNewest == runOldest {
-                    entries.append(.emptyDay(newest))
+                    rows.append(.emptyDay(newest))
                 } else {
                     let oldest = LocalDate(year: month.year, month: month.month, day: runOldest)
-                    entries.append(
+                    rows.append(
                         .gap(newest: newest, oldest: oldest, days: runNewest - runOldest + 1)
                     )
                 }
@@ -85,13 +83,19 @@ enum LifeEntryBuilder {
                     flushRun()
                     runNewest = nil
                     runOldest = nil
-                    entries.append(.day(date, treatment: .fullyComposed))
+                    rows.append(.day(date, treatment: .fullyComposed))
+                    daysDrawn += 1
                 } else {
                     if runNewest == nil { runNewest = day }
                     runOldest = day
                 }
             }
             flushRun()
+
+            // The rule counts the day rows underneath it rather than every indexed day in
+            // the month, so Life can never print three days above two of them.
+            entries.append(.monthHeader(month, subtitle: subtitle(forDaysWithCaptures: daysDrawn)))
+            entries.append(contentsOf: rows)
         }
 
         let older = monthEntries
@@ -113,6 +117,27 @@ enum LifeEntryBuilder {
 
     private static func subtitle(forDaysWithCaptures count: Int) -> String {
         count == 0 ? "nothing recorded" : DayFormatting.count(count, singular: "day", plural: "days")
+    }
+
+    /// The newest day of a month that may be drawn, so Life and the mosaic agree.
+    ///
+    /// The current month stops at today, because rmbr does not draw a day that has not
+    /// happened. A day that holds photographs has happened whatever the phone's clock
+    /// says: `CaptureIndex` bins a capture by its own civil day, so one taken in a zone
+    /// ahead of the phone's belongs to a date after today and must still be reachable.
+    static func lastDrawableDay(
+        of month: Month,
+        today: LocalDate,
+        datesWithCaptures: some Sequence<LocalDate>
+    ) -> Int {
+        let full = daysIn(month)
+        guard month == Month(year: today.year, month: today.month) else { return full }
+        let newestCapture = datesWithCaptures
+            .lazy
+            .filter { month.contains($0) }
+            .map(\.day)
+            .max() ?? 0
+        return min(full, max(today.day, newestCapture))
     }
 
     /// Length of a Gregorian month, without a calendar. The engine stays pure.

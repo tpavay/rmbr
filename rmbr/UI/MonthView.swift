@@ -5,13 +5,14 @@ import SwiftUI
 /// Everything at a glance, and honest about the days that hold nothing: an empty day is
 /// an outlined square with its number, not an absence. This is the altitude above Life -
 /// the same days, smaller - and the calendar in the corner glows to say you are inside
-/// it (RQ-069: opening a month composes only the day you open).
+/// it.
+///
+/// A cell draws its day's cover, so the days whose cells the lazy grid has realised are
+/// composed rather than only the day that is opened.
 struct MonthView: View {
     @Environment(LibraryModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let month: Month
-    /// The day the person came from, marked so they can find their way back to it.
-    var highlighted: LocalDate?
 
     private static let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 4)
 
@@ -102,7 +103,6 @@ struct MonthView: View {
             MonthCell(
                 date: date,
                 hasCaptures: hasCaptures,
-                isHighlighted: date == highlighted,
                 isToday: date == model.today
             )
         }
@@ -163,7 +163,6 @@ private struct MonthCell: View {
     @Environment(LibraryModel.self) private var model
     let date: LocalDate
     let hasCaptures: Bool
-    let isHighlighted: Bool
     let isToday: Bool
 
     var body: some View {
@@ -191,7 +190,7 @@ private struct MonthCell: View {
         .aspectRatio(1, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay {
-            if isHighlighted || isToday {
+            if isToday {
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(Palette.emberGlow, lineWidth: 1.5)
             }
