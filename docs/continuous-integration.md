@@ -159,7 +159,9 @@ the one thing this pipeline exists to stop.
   hardening practice; against one first-party action in a private repository it costs more
   readability than it buys.
 
-## The one thing this cannot do on GitHub Free
+## These checks report, but they cannot block a merge
+
+Read this before concluding that someone forgot to make the check required.
 
 The workflow reports a real result on every pull request, but on this plan nothing can *force*
 anyone to wait for it.
@@ -171,12 +173,21 @@ GET /repos/tpavay/rmbr/branches/main/protection
 403: "Upgrade to GitHub Pro or make this repository public to enable this feature."
 ```
 
-So the check is advisory: it turns the pull request red or green, and any tooling that waits
-on a merge state now has something to wait for, which is what issue #6 was actually stuck on.
-Making it blocking needs one of three things, and the choice is not the pipeline's to make:
-upgrade the account to Pro, which also raises the included allowance from 2,000 to 3,000
-minutes a month; make the repository public, which makes branch protection *and* all standard
-runner minutes free; or accept an advisory check.
+(`gh-axi` reports that as `FORBIDDEN / Insufficient permissions for this action`, which reads
+like a token scope problem and is not one. Re-run it through plain `gh api` to see the real
+message.)
 
-Nothing in `ci.yml` changes under any of those.
-When protection does become available, the check to require is named **Build and test**.
+So the check is advisory: it turns the pull request red or green, and any tooling that waits on
+a merge state now has something to wait for, which is what issue #6 was actually stuck on.
+That much was the whole blockage, and it is fixed.
+
+Advisory was **chosen, not overlooked**. Making the check blocking needs one of two things,
+each of which costs something that is not a pipeline decision: upgrading the account to Pro,
+which also raises the included allowance from 2,000 to 3,000 minutes a month; or making the
+repository public, which makes branch protection *and* all standard runner minutes free,
+macOS included, at the cost of publishing an unreleased product. That choice sits with the
+captain and was deliberately left open rather than being made here.
+
+Nothing in `ci.yml` changes under either of them.
+**If protection ever becomes available, the check to require is named `Build and test`.**
+That is the job's `name:`, and it is the string the required-checks setting wants.

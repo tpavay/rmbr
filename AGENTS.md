@@ -38,7 +38,7 @@ Every run prints a reconstruction report to the console - asset count, fetch and
 CI pins Xcode 26.3 and the iOS 26.2 simulator runtime; those two values move together and live in `env:` at the top of the workflow.
 `docs/continuous-integration.md` is the authoritative account of the runner choice, the cost basis, and everything deliberately left out. Read it before adding a step.
 
-Checks are advisory rather than blocking: branch protection is unavailable for private repositories on GitHub Free. The check to require, once it can be, is named **Build and test**.
+Checks report but cannot block a merge: branch protection is unavailable for private repositories on GitHub Free, so this was chosen rather than overlooked. If that ever changes, the check to require is named **Build and test**.
 
 ## Place names and the Geoapify key
 
