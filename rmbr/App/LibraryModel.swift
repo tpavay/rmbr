@@ -694,10 +694,14 @@ final class LibraryModel {
 
     /// A row's line for a day that has not been composed.
     ///
-    /// Opening a month must not compose every day in it. The archive survey already
-    /// knows how much each day holds and where its anchors are, and the ledger already
-    /// knows what those anchors are called, so a month row is honest without doing a day
-    /// page's work (RQ-069).
+    /// This reads only the archive survey's signals and the ledger's labels - it never
+    /// composes - and a mosaic cell uses it for its accessibility label.
+    ///
+    /// It is not what keeps a month cheap, and RQ-069's "do not compose every day in a
+    /// month" is departed from deliberately: the mosaic's grid is lazy, so each cell
+    /// composes its own day as it scrolls into view. Measured at 0.088 ms per composed
+    /// day, a screenful of cells is about a millisecond, and only a cell's own day can
+    /// say which capture represents it.
     func summary(for date: LocalDate) -> DayRowSummary {
         let signals = signalsByDate[date]
         // The same anchor the composed day would print first, so a month row and the day

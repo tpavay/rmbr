@@ -123,6 +123,11 @@ These are the places the implementation and the specifications disagree, and why
    Those two numbers cannot see one limited selection swapped for another, so under a limited grant the signature also carries a hash of the chosen identifiers.
    At the measured cost of a walk this is cheap; the incremental path is the obvious next refinement.
 
+7. **The month mosaic composes the days it shows.**
+   RQ-069 says opening a month must not compose every day in it.
+   A cell needs the capture that represents its day and only a composition can name that, so each cell composes its own day as the lazy grid realises it - see **Backfill** above for what that costs.
+   `LibraryModel.summary(for:)` still reads only the survey's signals and the ledger, and is what a cell's accessibility label uses.
+
 ## What the numbers were
 
 Measured, not estimated.
@@ -131,8 +136,8 @@ On a synthetic 6,018-asset simulator library shaped like the captain's (59 % geo
 The whole-archive survey that builds every day's moments and place anchors and picks each old month's representative cost a further **0.080 s**, over 2,612 days with captures.
 A warm launch reuses the snapshot and skips the walk entirely.
 
-At the captain's library size - 24,000 records over 6,502 days reaching back to 2008, exercised by `ScaleTests` - the index builds in **0.093 s**, the archive survey takes **0.269 s**, month selection takes **0.066 s**, and composing one day costs **0.081 ms**, against a 16.7 ms frame.
-Eighteen years of history stays a few hundred Life rows rather than six thousand; `ScaleTests` prints the exact count on every run, and it moved off the 1,111 measured before the window began emitting rows for its empty days.
+At the captain's library size - 24,000 records over 6,502 days reaching back to 2008, exercised by `ScaleTests` - the index builds in **0.117 s**, the archive survey takes **0.358 s**, month selection takes **0.075 s**, and composing one day costs **0.088 ms**, against a 16.7 ms frame.
+Eighteen years of history comes to **1,127** Life rows rather than six thousand, because a run of empty days collapses into a single row.
 
 The device figures will differ: simulator PhotoKit is backed by a Mac SSD.
 The app prints the same report to the console on every run, so the device number is one launch away.
