@@ -28,7 +28,7 @@ struct DaySignals: Sendable, Hashable {
 /// Why a day was chosen to represent its month.
 ///
 /// One reason code, expressible as a sentence to the person - "this month is here
-/// because you favourited a photo that day" - rather than a blended score (RE-044).
+/// because you favorited something that day" - rather than a blended score (RE-044).
 enum RepresentativeReason: String, Sendable, Codable, Hashable {
     case favoriteMedia
     case archiveUniquePlace

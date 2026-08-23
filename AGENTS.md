@@ -6,7 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 rmbr rebuilds a person's days from their photo library.
 
-Milestone 1 is the reconstruction engine and a deliberately rough day surface, reading **photographs only** - no calendar, no HealthKit, no Core Location.
+Milestone 1 is the reconstruction engine and the settled screens that read it - Life, the month mosaic, the day page and the film-advance viewer - reading **photographs only**: no calendar, no HealthKit, no Core Location.
 `docs/reconstruction-engine.md` is the authoritative account of what is built, where it lives, and every place it departs from its specifications. Read it before changing the engine.
 `docs/phase-0-findings.md` is the surviving artefact of the throwaway measurement spike that preceded it; its API appendix and its "Day model this wants to be" section are still current.
 
@@ -30,13 +30,13 @@ Verify a device compile without signing using `-destination 'generic/platform=iO
 
 Swift 6 language mode is on. Keep it on.
 
-Every run prints a reconstruction report to the console - asset count, fetch and walk times, days indexed, Life rows - and the same figures appear in the reconstruction sheet behind the gauge control. That report is how first-run cost gets measured rather than estimated.
+Every run prints a reconstruction report to the console - asset count, fetch and walk times, days indexed, Life rows - and the same figures appear in the diagnostics sheet, which is instrumentation rather than product and so has no on-screen control: a long press on the wordmark in Life opens it. That report is how first-run cost gets measured rather than estimated.
 
 ## Place names and the Geoapify key
 
 Place labels come from Geoapify rather than MapKit, because Apple forbids permanent storage of Map Data and rmbr's labels are permanent. `docs/reconstruction-engine.md` has the reasoning.
 
-The API key lives in the device keychain and is entered through the reconstruction sheet. It must never be committed, put in an `xcconfig` or an `Info.plist`, or compiled into a build. The master copy belongs in the macOS keychain via `secret set geoapify`.
+The API key lives in the device keychain and is entered through that same diagnostics sheet. It must never be committed, put in an `xcconfig` or an `Info.plist`, or compiled into a build. The master copy belongs in the macOS keychain via `secret set geoapify`.
 
 Geoapify's terms require OpenStreetMap attribution wherever the stored label is shown; `Day.placeAttributions` carries it so a display path cannot drop it.
 

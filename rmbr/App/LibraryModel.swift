@@ -1,6 +1,8 @@
 import Foundation
 import Observation
 import Photos
+import PhotosUI
+import UIKit
 
 enum LibraryPhase: Sendable, Hashable {
     case checkingPermission
@@ -193,7 +195,6 @@ final class LibraryModel {
     /// ledger held when it started, so a pass that ran across a newer answer describes
     /// names that have since been superseded and must not be committed over them.
     private var ledgerRevision = 0
-    private var representativeDates: Set<LocalDate> = []
     private var placeRequestsInFlight: Set<String> = []
     /// Coordinates whose newly stored labels the cached days do not carry yet, and
     /// whether a pass is already draining them. One pass at a time is what stops two
@@ -327,7 +328,6 @@ final class LibraryModel {
         lifeEntries = []
         monthEntries = []
         signalsByDate = [:]
-        representativeDates = []
         placeAttributions = []
         composedDayCount = 0
         composeSeconds = 0
@@ -522,11 +522,6 @@ final class LibraryModel {
             today: today,
             tuning: tuning
         )
-        representativeDates = Set(
-            monthEntries.compactMap {
-                if case .representative(let value) = $0 { value.date } else { nil }
-            }
-        )
         lifeEntries = LifeEntryBuilder.build(
             index: index,
             monthEntries: monthEntries,
@@ -699,10 +694,14 @@ final class LibraryModel {
 
     /// A row's line for a day that has not been composed.
     ///
-    /// Opening a month must not compose every day in it. The archive survey already
-    /// knows how much each day holds and where its anchors are, and the ledger already
-    /// knows what those anchors are called, so a month row is honest without doing a day
-    /// page's work (RQ-069).
+    /// This reads only the archive survey's signals and the ledger's labels - it never
+    /// composes - and a mosaic cell uses it for its accessibility label.
+    ///
+    /// It is not what keeps a month cheap, and RQ-069's "do not compose every day in a
+    /// month" is departed from deliberately: the mosaic's grid is lazy, so each cell
+    /// composes its own day as it scrolls into view. Measured at 0.088 ms per composed
+    /// day, a screenful of cells is about a millisecond, and only a cell's own day can
+    /// say which capture represents it.
     func summary(for date: LocalDate) -> DayRowSummary {
         let signals = signalsByDate[date]
         // The same anchor the composed day would print first, so a month row and the day
@@ -718,14 +717,6 @@ final class LibraryModel {
             counts: signals?.rawCounts ?? RawCaptureCounts(),
             placeCount: signals?.distinctPlaceCount ?? 0,
             hasExhaustiveCounts: access.isExhaustive
-        )
-    }
-
-    func treatment(for date: LocalDate) -> BackfillTreatment {
-        BackfillPolicy(tuning: tuning).treatment(
-            for: date,
-            today: today,
-            representatives: representativeDates
         )
     }
 
@@ -894,12 +885,39 @@ final class LibraryModel {
 
     // MARK: - Life
 
-    /// Every date with captures in a month, for the month destination.
+    /// Opens the system picker that widens a narrowed grant.
     ///
-    /// Opening a month composes its days on demand; it never injects them into Life
-    /// (RQ-069).
-    func dates(in month: Month) -> [LocalDate] {
-        (index?.dates(in: month) ?? []).sorted(by: >)
+    /// The one place rmbr asks for anything: with limited access and nothing chosen
+    /// there is no other way forward, and iOS owns the sheet that fixes it.
+    func presentLimitedPicker() {
+        guard access == .limited else { return }
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        guard let controller = scenes
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .rootViewController else { return }
+        PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: controller)
+    }
+
+    /// Every day with captures in a month, as a set the mosaic can ask per cell.
+    func datesWithCaptures(in month: Month) -> Set<LocalDate> {
+        Set(index?.dates(in: month) ?? [])
+    }
+
+    /// Every calendar day in a month, oldest first.
+    ///
+    /// The mosaic shows the days that hold nothing as well as the days that do, so it
+    /// cannot be built from the index alone. It stops where Life's walk stops - at today
+    /// in the current month, or at a capture dated later than today - so the two surfaces
+    /// can never disagree about which days exist.
+    func calendarDates(in month: Month) -> [LocalDate] {
+        let last = LifeEntryBuilder.lastDrawableDay(
+            of: month,
+            today: today,
+            datesWithCaptures: index?.dates(in: month) ?? []
+        )
+        guard last >= 1 else { return [] }
+        return (1...last).map { LocalDate(year: month.year, month: month.month, day: $0) }
     }
 
     func representative(for month: Month) -> MonthlyRepresentative? {

@@ -199,6 +199,49 @@ enum DayFormatting {
             : "rmbr can see nothing from this day."
     }
 
+    /// The facts a Life card prints under its date: at most two, place first.
+    ///
+    /// A card has less room than a row did and the photograph is already carrying the
+    /// day, so the capture summary only appears when there is no place to name.
+    static func cardFacts(for day: Day) -> [String] {
+        var facts: [String] = []
+        if let place = day.moments.compactMap({ $0.place?.label.knownValue }).first {
+            facts.append(place.text)
+        }
+        if let placeCount = day.facts.placeCount.knownValue, placeCount > 1 {
+            let places = count(placeCount, singular: "place", plural: "places")
+            facts.append(day.hasExhaustiveCounts ? places : "\(places) rmbr can see")
+        }
+        if facts.count < 2, let counts = day.media.rawCounts.knownValue,
+           let summary = captureSummary(counts) {
+            facts.append(summary)
+        }
+        if facts.isEmpty { facts.append(rowFallback(for: day)) }
+        return Array(facts.prefix(2))
+    }
+
+    /// How a collapsed run of empty days names itself.
+    ///
+    /// Both ends carry a month only when the run crosses one, which it cannot today -
+    /// runs are built inside a single month - but the formatting does not assume it.
+    static func span(from oldest: LocalDate, to newest: LocalDate) -> String {
+        if oldest.year == newest.year && oldest.month == newest.month {
+            return "\(oldest.day) \u{2013} \(newest.day) \(monthName(newest))"
+        }
+        return "\(monthName(oldest)) \(oldest.day) \u{2013} \(monthName(newest)) \(newest.day)"
+    }
+
+    private static let monthNameFormatter = formatter(dateFormat: "MMMM")
+
+    static func monthName(_ date: LocalDate) -> String {
+        var components = DateComponents()
+        components.year = date.year
+        components.month = date.month
+        components.day = 1
+        guard let resolved = componentCalendar.date(from: components) else { return "" }
+        return monthNameFormatter.string(from: resolved)
+    }
+
     /// Up to three key facts, taken by the fixed category order.
     ///
     /// Milestone 1 can supply the named place and the capture summary. The workout,

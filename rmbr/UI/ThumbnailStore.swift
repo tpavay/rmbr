@@ -363,7 +363,11 @@ final class ThumbnailStore {
         return cgImage.bytesPerRow * cgImage.height
     }
 
-    private static func key(_ identifier: String, _ size: CGSize) -> String {
+    /// One capture at one size: what the cache is keyed by, and what a view drawing it
+    /// is asking for. Both read this rather than spelling it out, because a view whose
+    /// identity is coarser than the key it fetches under keeps whichever size it asked
+    /// for first.
+    static func key(_ identifier: String, _ size: CGSize) -> String {
         "\(identifier)@\(Int(size.width))x\(Int(size.height))"
     }
 }
@@ -434,8 +438,10 @@ struct MediaThumbnail: View {
             .clipped()
             // The purge generation is part of the identity, so a purge restarts the fetch
             // against the grant that exists now, and every image is stamped with the
-            // generation it was fetched under on the way in.
-            .task(id: "\(store.generation):\(reference.localIdentifier)") {
+            // generation it was fetched under on the way in. The size is part of it too,
+            // because a caller sizing its target from geometry can settle on a different
+            // one than it first reported.
+            .task(id: "\(store.generation):\(ThumbnailStore.key(reference.localIdentifier, targetSize))") {
                 let generation = store.generation
                 delivered = store.cachedImage(for: reference, targetSize: targetSize)
                     .map { DeliveredImage(image: $0, generation: generation) }
