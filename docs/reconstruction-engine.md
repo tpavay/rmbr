@@ -23,13 +23,25 @@ Every source outside photographs reports `CoverageState.notCollected` and every 
 | Normalised contract | `rmbr/Model` | Foundation only |
 | Engine | `rmbr/Engine` | Foundation only |
 | Sources | `rmbr/Sources` | Photos, Security, URLSession |
-| App and interface | `rmbr/App`, `rmbr/UI` | SwiftUI, the model |
+| App and interface | `rmbr/App`, `rmbr/UI` | SwiftUI, AVFoundation, the model |
 
 The engine is pure and synchronous.
 It is written against `CaptureRecord`, a normalised value type, rather than `PHAsset`, which is why every rule in it is exercised by tests on a laptop with no device, no permission sheet and no network.
 
 The order of a composition is: assign captures to a civil day, filter hard exclusions, build place anchors from the coordinates that survive, build moments, allocate the display budget, and emit `Day`.
 Place naming happens afterwards and never blocks it.
+
+### Video playback
+
+A video is a frame on the same strip as every still, and it plays there rather than on a screen of its own.
+`MediaViewer` owns exactly one `VideoPlayback`, which owns at most one `AVPlayer`: a paged strip keeps its neighbours alive, so a player belonging to a frame would mean a player per neighbour on a day full of videos.
+Advancing the film releases the player rather than pausing it, and pausing releases the audio session, which is what lets an app rmbr interrupted resume at the pause rather than at the dismissal.
+
+Nothing plays until the person asks, and what plays begins muted.
+Muted playback claims `AVAudioSession` `.ambient`, which mixes with whatever else is playing; unmuting claims `.playback` with `.moviePlayback`, which does not, and which stays audible with the Ring/Silent switch set to silent because the person just tapped a control asking for exactly this sound.
+
+The transport - play, position, a scrubber, and sound - is drawn in the app's own language rather than taken from `AVPlayerViewController`, whose scrubber and tap-to-reveal gestures would compete with the swipe that turns the page.
+It lives in the viewer's chrome outside the paging `TabView` for the same reason.
 
 ## Day boundary
 

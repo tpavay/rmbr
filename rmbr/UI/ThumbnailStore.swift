@@ -395,6 +395,13 @@ struct MediaThumbnail: View {
     let reference: MediaReference
     var targetSize: CGSize = CGSize(width: 600, height: 600)
     var allowNetwork = false
+    /// Whether a video says so with a corner badge.
+    ///
+    /// True everywhere a video would otherwise be indistinguishable from a still. The
+    /// full-screen viewer turns it off because it draws a play control of its own in the
+    /// middle of the frame and states the length in the caption, and two play triangles
+    /// on one frame is one of them saying nothing.
+    var showsVideoBadge = true
 
     var body: some View {
         // The pixels sit in an overlay rather than a stack, so an aspect-fill image can
@@ -410,7 +417,7 @@ struct MediaThumbnail: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                if reference.kind == .video {
+                if reference.kind == .video, showsVideoBadge {
                     // A video is never visually indistinguishable from a still, and
                     // never plays without the person asking (RQ-027).
                     HStack(spacing: 4) {
